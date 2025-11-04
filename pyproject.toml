@@ -1,0 +1,19 @@
+[project]
+name = "mechanics"
+version = "0.1.0"
+description = "Modeling and calculating mechanics"
+readme = "README.md"
+authors = [{ name = "Yuki Fujihara", email = "mail@fujiy.dev" }]
+requires-python = ">=3.13"
+dependencies = [
+    "ipykernel>=7.1.0",
+    "ipython>=9.6.0",
+    "matplotlib>=3.10.7",
+    "numpy>=2.3.4",
+    "scipy>=1.16.3",
+    "sympy>=1.14.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.8.22,<0.9.0"]
+build-backend = "uv_build"
