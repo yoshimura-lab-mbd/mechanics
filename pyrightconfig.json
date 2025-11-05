@@ -1,0 +1,7 @@
+{
+    "typeCheckingMode": "basic",
+    "stubPath": "src/typings",
+    "extraPaths": [
+        "src"
+    ],
+}
