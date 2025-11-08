@@ -27,33 +27,33 @@ class Index(sp.Symbol):
 class Function(spf.AppliedUndef):
     name: str
     _space:       Space
-    _index_num:   int
+    _base_spaces: tuple[BaseSpace, ...]
     _iterable:    bool = False
 
     # Initialization
 
     @classmethod
-    def make(cls, name: str, *args: Expr, space: Space = R, index_num: int = -1, **options) -> 'Function':
+    def make(cls, name: str, *args: Expr, space: Space = R, 
+             base_spaces: Optional[tuple[BaseSpace, ...]] = None, **options) -> 'Function':
         if space == Z:
             options['integer'] = True
         return cast(Function, 
                     spf.UndefinedFunction(name, bases=(Function,), **options)
-                        (*args, space=space, index_num=index_num, **options)) #type:ignore
+                        (*args, space=space, base_spaces=base_spaces, **options)) #type:ignore
 
-    def __new__(cls, *args: Expr, space: Space = R, index_num: int = -1, **options):
-        if index_num < 0:
-            index_num = 0
+    def __new__(cls, *args: Expr, space: Space = R, base_spaces: Optional[tuple[BaseSpace, ...]] = None, **options):
+        if base_spaces is None:
             indices = []
-            base_spaces = []
+            base_spaces_ = []
             for a in args:
                 if isinstance(a, Index):
-                    index_num += 1
                     indices.append(a)
                 elif isinstance(a, BaseSpace):
-                    base_spaces.append(a)
+                    base_spaces_.append(a)
                 else:
                     raise ValueError(f'Invalid argument {a} for Function {cls.__name__}, must be Index or BaseSpace')
-            args = tuple(indices + base_spaces)
+            base_spaces = tuple(base_spaces_)
+            args = tuple(indices) + base_spaces
 
         var = cast(Function, super().__new__(cls, *args))
 
@@ -61,7 +61,7 @@ class Function(spf.AppliedUndef):
             var.is_Integer = True
 
         var._space = space
-        var._index_num = index_num
+        var._base_spaces = base_spaces
 
         return var
 
@@ -69,14 +69,14 @@ class Function(spf.AppliedUndef):
     @property
     def func(self): #type:ignore
         return lambda *args, **options: \
-            self.make(self.name, *args, space=self._space, index_num=self._index_num, **options)
+            self.make(self.name, *args, space=self._space, base_spaces=self._base_spaces, **options)
     
     # Indexing
     def __getitem__(self, *index_values: Any) -> single_or_tuple['Function']:
         new_indices = list(self.indices)
         for n, value in enumerate(index_values):
-            if n >= self._index_num:
-                raise IndexError(f'Too many indices for function {self.name}, has only {self._index_num} indices')
+            if n >= len(self.indices):
+                raise IndexError(f'Too many indices for function {self.name}, has only {len(self.indices)} indices')
             if isinstance(value, slice):
                 if value.start is None and value.stop is None and value.step is None:
                     pass
@@ -85,23 +85,23 @@ class Function(spf.AppliedUndef):
             else:
                 new_indices[n] = value
 
-        return self.make(self.name, *new_indices, *self.base_spaces, index_num=self._index_num, space=self._space)
+        return self.make(self.name, *new_indices, *self.base_space_values, space=self._space, base_spaces=self._base_spaces)
    
 
    # Assigning base spaces 
     def at(self, *values: Any) -> single_or_tuple['Function']:
-        new_base_spaces = list(self.base_spaces)
+        new_base_space_values = list(self.base_space_values)
         for n, value in enumerate(values):
-            if n >= len(new_base_spaces):
-                raise IndexError(f'Too many base spaces for function {self.name}, has only {len(new_base_spaces)} base spaces')
+            if n >= len(new_base_space_values):
+                raise IndexError(f'Too many base spaces for function {self.name}, has only {len(self.base_spaces)} base spaces')
             if isinstance(value, slice):
                 if value.start is None and value.stop is None and value.step is None:
                     pass
                 else:
                     raise NotImplementedError('Only empty slice is supported for base space assignment')
             else:
-                new_base_spaces[n] = value
-        return self.make(self.name, *self.indices, *new_base_spaces, index_num=self._index_num, space=self._space)
+                new_base_space_values[n] = value
+        return self.make(self.name, *self.indices, *new_base_space_values, space=self._space, base_spaces=self._base_spaces)
 
     # Printing
 
@@ -109,7 +109,7 @@ class Function(spf.AppliedUndef):
         return f'{self.name}{self.args}'
 
     def _latex(self, printer, exp=None, notation=None) -> str:
-        latex = f'{self.name}'
+        latex = f'{{{self.name}}}'
         if notation:
             latex = notation(latex)
         if self.indices: 
@@ -124,22 +124,38 @@ class Function(spf.AppliedUndef):
     #     return python_name(sp.latex(self))
 
     # Properties
+
+    @property
+    def base_spaces(self) -> tuple[BaseSpace, ...]:
+        return self._base_spaces
       
     @property
-    def base_spaces(self) -> tuple[Expr, ...]:
-        return cast(tuple[Expr, ...], self.args[self._index_num:])
+    def base_space_values(self) -> tuple[Expr, ...]:
+        return cast(tuple[Expr, ...], self.args[len(self.args) - len(self._base_spaces):])
+
+    def base_space_subs(self) -> dict[BaseSpace, Expr]:
+        return {s: value for s, value in zip(self.base_spaces, self.base_space_values)}
     
     @property
     def indices(self) -> tuple[Expr, ...]:
-        return cast(tuple[Expr, ...], self.args[:self._index_num])
+        return cast(tuple[Expr, ...], self.args[:len(self.args) - len(self._base_spaces)])
     
     @property
     def space(self) -> Space:
         return self._space
+
+
+ExplicitEquations = dict[Function, Expr]
+ImplicitEquations = tuple[Expr, ...]
+
     
 def base_spaces(name: str) -> tuple[BaseSpace, ...]:
     names = split_latex(name)
     return tuple(BaseSpace(n) for n in names)
+
+def indices(name: str) -> tuple[Index, ...]:
+    names = split_latex(name)
+    return tuple(Index(n) for n in names)
 
 def variables(name: str,
               *base_space_or_index: BaseSpace | Index,

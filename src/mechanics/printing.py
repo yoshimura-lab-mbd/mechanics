@@ -32,8 +32,9 @@ def show_equation(eq: tuple_ish[Expr] | dict[Expr, Expr], rhs: Optional[Expr] = 
             else:
                 equations.append(sp.Eq(eq_n, rhs or 0))
 
-
-    if len(equations) == 1:
+    if not equations:
+        return
+    elif len(equations) == 1:
         show(equations[0])
     else:
         latex_str = '\\begin{cases}'
