@@ -1,4 +1,4 @@
-from typing import Self, cast
+from typing import Self, cast, overload
 import sympy as sp
 
 from mechanics.conversion import Conversion
@@ -40,6 +40,7 @@ class Discretization(Conversion):
 
     def convert_expr(self, expr: Expr) -> Expr:
         return cast(Expr, expr.replace(lambda e: isinstance(e, Function), self.replace_function))
+
 
 def discretization() -> Discretization:
     return Discretization()
