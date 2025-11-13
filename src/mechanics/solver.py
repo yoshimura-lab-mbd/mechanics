@@ -9,6 +9,7 @@ import subprocess
 import sympy.printing.fortran
 import textwrap
 import time
+import numpy as np
 
 from mechanics.function import ExplicitEquations, Function, Expr, Index
 from mechanics.util import python_name
@@ -140,30 +141,6 @@ class Solver(SolverBlock):
         self._inputs.extend(inputs)
         return self
 
-    def run(self, condition: dict[Function, float]) -> None:
-        if self._generated is None:
-            raise RuntimeError('Solver has not been compiled. Use "with Solver() as solver:" syntax.')
-
-        condition_values = []
-
-        for c in self._constants:
-            if c not in condition:
-                raise ValueError(f'Constant {c} not provided in condition.')
-            condition_values.append(float(condition[c]))
-
-        for v in self._inputs:
-            if v not in condition:
-                raise ValueError(f'Input variable {v} not provided in condition.')
-            condition_values.append(float(condition[v]))
-
-        result_dir = tempfile.mkdtemp()
-        log_path = os.path.join(result_dir, 'result.log')
-
-        status, message = self._generated.run_solver(log_path, condition_values)
-        if status != 0:
-            time.sleep(0.1)
-            raise RuntimeError(message.decode('utf-8'))
-
 
     def __enter__(self) -> Self:
         return self
@@ -251,14 +228,15 @@ class Solver(SolverBlock):
             {p(c)} = condition({n + 1})'''
         code += '''
         
-            ! Allocate variables'''
+            ! Allocate for variables'''
 
         for v, indices in self._variables.items():
             if indices:
                 name = printer.fortran_name(v.name)
                 ranges = ",".join(f"int({p(start)}):int({p(end)})" for i, start, end in indices)
                 code += f'''
-            allocate({name}({ranges}))'''
+            allocate({name}({ranges}))
+            {name} = ieee_value({name}, ieee_quiet_nan)'''
         code += '''
 
             ! Initialize variables using inputs'''
@@ -266,16 +244,28 @@ class Solver(SolverBlock):
         for n, v in enumerate(self._inputs):
             code += f'''
             {p(v)} = condition({len(self._constants) + n + 1})'''
+
+        code += f'''
+
+            ! Allocate for functions'''
+            
+        for name, indices in self._functions.items():
+            if indices:
+                f_name = printer.fortran_name(name)
+                ranges = ",".join(f"int({p(start)}):int({p(end)})" for i, start, end in indices)
+                code += f'''
+            allocate({f_name}({ranges}))
+            {f_name} = ieee_value({f_name}, ieee_quiet_nan)'''
                 
         code += f'''
 
             print *, "Started"
-            print *, "Output in ", log_path
+            ! print *, "Output in ", log_path
 
-            open(unit=log_unit, file=log_path//"log.bin", form='unformatted',&
+            open(unit=log_unit, file=log_path, form='unformatted',&
                  access='stream', status='replace', iostat=ios)
             if (ios /= 0) then
-               print *, "Error opening file: ", log_path//"log.bin"
+               print *, "Error opening file: ", log_path
                stop 1
             end if
 
@@ -286,6 +276,26 @@ class Solver(SolverBlock):
             code += '\n'
 
         code += f'''
+            ! Write variables to log
+        '''
+        for v in self._variables:
+            if v.indices:
+                code += f'''
+            write(log_unit) {printer.print_as_array_arg(v)}'''
+            else:
+                code += f'''
+            write(log_unit) {p(v)}'''
+
+        code += f'''
+            ! Write functions to log
+        '''
+        for name in self._functions:
+            code += f'''
+            write(log_unit) {printer.fortran_name(name)}'''
+
+        code += f'''
+
+
             print *, "Completed"
             call flush(6)
             close(log_unit)
@@ -339,6 +349,63 @@ class Solver(SolverBlock):
         spec.loader.exec_module(module)
 
         return module
+
+    def run(self, condition: dict[Function, float]) -> dict[Function | str, float | np.ndarray]:
+        if self._generated is None:
+            raise RuntimeError('Solver has not been compiled. Use "with Solver() as solver:" syntax.')
+
+        condition_values = []
+
+        for c in self._constants:
+            if c not in condition:
+                raise ValueError(f'Constant {c} not provided in condition.')
+            condition_values.append(float(condition[c]))
+
+        for v in self._inputs:
+            if v not in condition:
+                raise ValueError(f'Input variable {v} not provided in condition.')
+            condition_values.append(float(condition[v]))
+
+        result_dir = tempfile.mkdtemp()
+        log_path = os.path.join(result_dir, 'result.log')
+
+        status, message = self._generated.run_solver(log_path, condition_values)
+        if status != 0:
+            time.sleep(0.1)
+            raise RuntimeError(message.decode('utf-8'))
+
+        log_data = np.memmap(log_path, dtype=np.float64, mode='r')
+
+        result = {}
+        for c in self._constants:
+            result[c] = condition[c]
+
+        offset = 0
+        for v, indices in self._variables.items():
+            if indices:
+                shape = tuple(int((end - start + 1).subs(condition.items())) 
+                              for i, start, end in indices)
+                size = np.prod(shape)
+                data = log_data[offset:offset + size].reshape(shape)
+                result[v] = data
+                offset += size
+            else:
+                result[v] = log_data[offset]
+                offset += 1
+
+        for name, indices in self._functions.items():
+            if indices:
+                shape = tuple(int((end - start + 1).subs(condition.items())) 
+                              for i, start, end in indices)
+                size = np.prod(shape)
+                data = log_data[offset:offset + size].reshape(shape)
+                result[name] = data
+                offset += size
+            else:
+                result[name] = log_data[offset]
+                offset += 1
+
+        return result
 
 class ExplicitBlock(SolverBlock):
     _equations: ExplicitEquations
