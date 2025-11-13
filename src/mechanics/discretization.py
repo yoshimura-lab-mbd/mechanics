@@ -1,9 +1,11 @@
-from typing import Self, Any
+from typing import Self, cast
 import sympy as sp
+
+from mechanics.conversion import Conversion
 
 from .function import BaseSpace, Index, Expr, Function
 
-class Discretization():
+class Discretization(Conversion):
 
     _space: dict[BaseSpace, tuple[Index, Expr, dict[Expr, Expr]]]
 
@@ -36,19 +38,8 @@ class Discretization():
         return Function.make(f.name, *f.indices, *new_indices, *new_base_space_values, 
                              space=f.space, base_spaces=tuple(new_base_spaces))
 
-    def __call__(self, target: Any) -> Any:
-
-        if isinstance(target, Expr):
-            return target.replace(lambda expr: isinstance(expr, Function), self.replace_function)
-        elif isinstance(target, dict):
-            return { self(t): self(v) for t, v in target.items() }
-        elif isinstance(target, tuple):
-            return tuple(self(t) for t in target)
-        elif isinstance(target, list):
-            return [self(t) for t in target]
-        else:
-            raise NotImplementedError('Discretization not implemented for type: ' + str(type(target)))
-
+    def convert_expr(self, expr: Expr) -> Expr:
+        return cast(Expr, expr.replace(lambda e: isinstance(e, Function), self.replace_function))
 
 def discretization() -> Discretization:
     return Discretization()

@@ -3,9 +3,11 @@ import sympy as sp
 from sympy.strategies import new
 
 from mechanics.function import ExplicitEquations, Function, Expr
+from mechanics.conversion import Conversion, Replacement
 
 
-def to_first_order(F: ExplicitEquations, t: Optional[Function] = None, diff_var_prefixes: list[str] = ['v', 'a']) -> ExplicitEquations:
+def to_first_order(F: ExplicitEquations, t: Optional[Function] = None, 
+                   diff_var_prefixes: list[str] = ['v', 'a']) -> tuple[ExplicitEquations, Conversion]:
     """ Convert higher-order explicit equations to first-order explicit equations.
     
     Args:
@@ -47,7 +49,7 @@ def to_first_order(F: ExplicitEquations, t: Optional[Function] = None, diff_var_
     subs = list(reversed(new_vars.items()))
 
     return { cast(Function, dx.subs(subs)): fX.subs(subs) 
-             for dx, fX in F.items() } | diffs
+             for dx, fX in F.items() } | diffs, Replacement(subs)
     
 
 def is_first_derivative(expr: Expr) -> bool:

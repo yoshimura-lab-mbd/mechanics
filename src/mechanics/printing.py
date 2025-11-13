@@ -16,7 +16,7 @@ def show(*item: str | Basic):
             latex_str += latex(x)
     display(Math(latex_str))
 
-def show_equation(eq: tuple_ish[Expr] | dict[Expr, Expr], rhs: Optional[Expr] = None):
+def show_equations(eq: tuple_ish[Expr] | dict[Expr, Expr], rhs: Optional[Expr] = None):
     equations = []
     if isinstance(eq, dict):
         if rhs is not None:
