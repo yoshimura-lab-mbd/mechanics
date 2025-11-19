@@ -4,9 +4,10 @@ version = "0.1.0"
 description = "Modeling and calculating mechanics"
 readme = "README.md"
 authors = [{ name = "Yuki Fujihara", email = "mail@fujiy.dev" }]
-requires-python = ">=3.13"
+requires-python = ">=3.11"
 dependencies = [
     "ipykernel>=7.1.0",
+    "ipympl>=0.9.8",
     "ipython>=9.6.0",
     "matplotlib>=3.10.7",
     "numpy>=2.3.4",
