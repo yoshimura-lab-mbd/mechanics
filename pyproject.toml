@@ -10,6 +10,8 @@ dependencies = [
     "ipympl>=0.9.8",
     "ipython>=9.6.0",
     "matplotlib>=3.10.7",
+    "meson>=1.9.1",
+    "ninja>=1.13.0",
     "numpy>=2.3.4",
     "scipy>=1.16.3",
     "sympy>=1.14.0",
@@ -22,4 +24,5 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "pyright>=1.1.407",
+    "pytest>=9.0.1",
 ]

@@ -3,9 +3,9 @@ from sympy.printing.latex import LatexPrinter
 from IPython.display import display, Math
 from typing import Optional
 
-from .function import Expr, Function, BaseSpace, Basic
+from .symbol import Expr, Variable, BaseSpace, Basic
 from .util import tuple_ish, to_tuple
-from .config import diff_notations
+from . import config
 
 def show(*item: str | Basic):
     latex_str = ''
@@ -54,12 +54,12 @@ class LatexPrinterModified(LatexPrinter):
         no_notations = []
 
         for s, n in expr.args[1:]: #type:ignore
-            if isinstance(s, BaseSpace) and s.name in diff_notations:
-                notations.append((diff_notations[s.name], n))
+            if isinstance(s, BaseSpace) and s.name in config.diff_notations:
+                notations.append((config.diff_notations[s.name], n))
             else:
                 no_notations.append((s, n))
 
-        if isinstance(expr.args[0], Function):
+        if isinstance(expr.args[0], Variable):
             def notation_combined(s):
                 for notation, n in notations:
                     s = notation(s, n)
@@ -72,6 +72,6 @@ class LatexPrinterModified(LatexPrinter):
                 printed = notation(printed, n)
 
         if no_notations:
-            return super()._print_Derivative(sp.Derivative(sp.Symbol(printed), no_notations)) 
+            return super()._print_Derivative(sp.Derivative(sp.Symbol(printed), *no_notations)) 
         else:
             return printed

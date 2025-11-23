@@ -10,9 +10,10 @@ import sympy.printing.fortran
 import textwrap
 import time
 import numpy as np
+import sympy as sp
 
-from mechanics.function import ExplicitEquations, Function, Expr, Index
-from mechanics.util import python_name
+from mechanics.symbol import ExplicitEquations, Variable, Expr, Index
+from mechanics.util import python_name, to_tuple, tuple_ish
 import mechanics.space as space
 
 class FortranPrinter(sympy.printing.fortran.FCodePrinter):
@@ -34,7 +35,7 @@ class FortranPrinter(sympy.printing.fortran.FCodePrinter):
             str(symbol)
     
     def _print_Function(self, f):
-        if isinstance(f, Function):
+        if isinstance(f, Variable):
             if f.indices:
                 indices = [cast(str, self.doprint(i)) for i in f.indices]
                 return f'{self.fortran_name(f.name)}({", ".join(indices)})'
@@ -44,10 +45,16 @@ class FortranPrinter(sympy.printing.fortran.FCodePrinter):
             return super()._print_Function(f)
         
     
-    def print_as_array_arg(self, f: Function) -> str:
+    def print_as_array_arg(self, f: Variable) -> str:
         if not f.indices:
             return f'{self.fortran_name(f.name)}'
-        return f'{self.fortran_name(f.name)}({",".join([":"] * len(f.indices))})'
+        args = []
+        for i, value in f.index_subs.items():
+            if i == value:
+                args.append(':')
+            else:
+                args.append(f'{self.doprint(value)}')
+        return f'{self.fortran_name(f.name)}({",".join(args)})'
 
 
 class SolverBlock:
@@ -63,12 +70,12 @@ class SolverBlock:
         self._sub_blocks.append(block)
         return self
 
-    def calculate(self, functions: dict[str, Function], *indices: Index) -> Self:
+    def calculate(self, functions: dict[str, Expr], *indices: Index) -> Self:
         block = FunctionsBlock(self._root, functions, *indices)
         self._sub_blocks.append(block)
         return self
 
-    def steps(self, index: Index, start: Expr, end: Expr) -> 'IterationBlock':
+    def steps(self, index: Index, start: Expr | int, end: Expr | int) -> 'IterationBlock':
         block = IterationBlock(self._root, index, start, end)
         self._sub_blocks.append(block)
         return block
@@ -83,19 +90,19 @@ class SolverBlock:
         return indices
 
 class Solver(SolverBlock):
-    _constants: list[Function]
-    _variables: dict[Function, list[tuple[Index, Expr, Expr]]]
-    _functions: dict[str, list[tuple[Index, Expr, Expr]]]
-    _inputs: list[Function]
+    _variables: dict[Variable, list[tuple[Index, Expr | int, Expr | int]]]
+    _functions: dict[str, list[tuple[Index, Expr | int, Expr | int]]]
+    _constants: list[Variable]
+    _inputs: list[Variable]
 
     _generated: Any
     _generate_dir: Optional[str]
 
     def __init__(self) -> None:
         super().__init__(self)
-        self._constants = []
         self._variables = {}
         self._functions = {}
+        self._constants = []
         self._inputs = []
         self._generate_dir = None
         
@@ -103,13 +110,16 @@ class Solver(SolverBlock):
         if self._generate_dir and os.path.exists(self._generate_dir):
             shutil.rmtree(self._generate_dir)
 
-    def constants(self, *constants: Function) -> Self:
+    def constants(self, *constants: Variable,
+                  index: Optional[tuple[Index, Expr | int, Expr | int]] = None,
+                  indices: list[tuple[Index, Expr | int, Expr | int]] = []) -> Self:
+        self.variables(*constants, index=index, indices=indices)
         self._constants.extend(constants)
         return self
 
-    def variables(self, *variables: Function, 
-                  index: Optional[tuple[Index, Expr, Expr]] = None,
-                  indices: list[tuple[Index, Expr, Expr]] = []) -> Self:
+    def variables(self, *variables: Variable, 
+                  index: Optional[tuple[Index, Expr | int, Expr | int]] = None,
+                  indices: list[tuple[Index, Expr | int, Expr | int]] = []) -> Self:
         if index:
             indices = [index] + indices
 
@@ -118,13 +128,22 @@ class Solver(SolverBlock):
                 raise TypeError(f"Expected Index, got {i} which has type {type(i)})")
 
         for var in variables:
+            unknowns = self._unknowns(var.args)
+            if unknowns:
+                raise ValueError(f'{var} contains unknown variables or constants: {unknowns}. '
+                                  'Add them using .variables() or .constants() first.')
+            for index in indices:
+                unknowns = self._unknowns(index) #type:ignore
+                if unknowns:
+                    raise ValueError(f'Index specification {index} contains unknown constants: {unknowns}. '
+                                      'Add them using .constants() first.')
             self._variables[var] = indices
 
         return self
 
     def functions(self, *names: str, 
-                  index: Optional[tuple[Index, Expr, Expr]] = None,
-                  indices: list[tuple[Index, Expr, Expr]] = []) -> Self:
+                  index: Optional[tuple[Index, Expr | int, Expr | int]] = None,
+                  indices: list[tuple[Index, Expr | int, Expr | int]] = []) -> Self:
         if index:
             indices = [index] + indices
         
@@ -137,7 +156,7 @@ class Solver(SolverBlock):
 
         return self
 
-    def inputs(self, *inputs: Function) -> Self:
+    def inputs(self, *inputs: Variable) -> Self:
         self._inputs.extend(inputs)
         return self
 
@@ -152,28 +171,40 @@ class Solver(SolverBlock):
 
         self._generated = self._compile_and_load(code)
 
+    def _shape_of(self, var: Variable, subs: Any = {}) -> tuple[Expr, ...]:
+        shape = []
+        var_shape = self._variables.get(var.general_form(), None)
+        if var_shape is None:
+            raise ValueError(f'Variable {var} not defined in solver.')
+        
+        indices = var.index_subs
+        for i, start, end in var_shape:
+            if indices[i] == i:
+                shape.append(sp.sympify(end - start + 1).subs(subs))
+        return tuple(shape)
+
+    def _size_of(self, var: Variable) -> Expr:
+        size = sp.S.One
+        for n in self._shape_of(var):
+            size *= n
+        return size
+
+    def _unknowns(self, exprs: tuple_ish[Expr]) -> set[Variable]:
+        unknowns = set()
+        for expr in to_tuple(exprs):
+            vars = sp.sympify(expr).atoms(Variable)
+            for v in vars:
+                if v not in self._constants and v not in self._inputs:
+                    unknowns.add(v)
+        return unknowns
 
     def _generate(self, printer: FortranPrinter) -> str:
         p = printer.doprint
 
         code = ''
         code += f'''
-        module constants
-            real(8), save :: dummy_ = 0.0d0
-        '''
-        for c in self._constants:
-            if c.space == space.Z:
-                code += f'''
-            integer, save :: {p(c)} = 0'''
-            else: 
-                code += f'''
-            real(8), save :: {p(c)} = 0.0d0'''
-        code += f'''
-        end module constants
-
         subroutine run_solver(log_path, condition, status, message)
             use, intrinsic :: ieee_arithmetic
-            use constants
             implicit none
             double precision dnrm2
             external dnrm2
@@ -183,18 +214,21 @@ class Solver(SolverBlock):
             integer, intent(out) :: status
             character(len=100), intent(out) :: message
 
+            integer :: input_n
+
             integer :: log_unit = 20
             integer :: ios
-            
-            ! Define variables'''
+
+            ! Define constants and variables'''
 
         for var in self._variables:
+            type_ = 'integer' if var.space == space.Z else 'real(8)'
             if var.indices:
                 code += f'''
-            real(8), allocatable :: {printer.print_as_array_arg(var)}'''
+            {type_}, allocatable :: {printer.print_as_array_arg(var)}'''
             else:
                 code += f'''
-            real(8) :: {p(var)} = 0.0d0'''
+            {type_} :: {p(var)}'''
 
         code += '''
 
@@ -217,33 +251,78 @@ class Solver(SolverBlock):
 
         code += '''
 
-            ! Initialize constants'''
-
-        for n, c in enumerate(self._constants):
-            if c.space == space.Z:
-                code += f'''
-            {p(c)} = int(condition({n + 1}))'''
-            else: 
-                code += f'''
-            {p(c)} = condition({n + 1})'''
-        code += '''
+            ! Initialize variables
+            input_n = 1
+            '''
         
-            ! Allocate for variables'''
+        initialized = set()
 
-        for v, indices in self._variables.items():
-            if indices:
-                name = printer.fortran_name(v.name)
-                ranges = ",".join(f"int({p(start)}):int({p(end)})" for i, start, end in indices)
+        for v in self._constants + self._inputs:
+            var = v.general_form()
+            indices = self._variables.get(var, [])
+            if var in self._variables and indices and var not in initialized:
+                initialized.add(var)
+                name = printer.fortran_name(var.name)
+                ranges = ",".join(f"{p(start)}:{p(end)}" for i, start, end in indices)
                 code += f'''
             allocate({name}({ranges}))
             {name} = ieee_value({name}, ieee_quiet_nan)'''
+
+            name = printer.fortran_name(v.name)
+            size = self._size_of(v)
+            shape = self._shape_of(v)
+            assign_to = printer.print_as_array_arg(v) if var != v else name
+
+            if v.space == space.Z:
+                if len(shape) == 0:
+                    code += f'''
+            {assign_to} = int(condition(input_n))
+            input_n = input_n + 1'''
+
+                elif len(shape) == 1: 
+                    code += f'''
+            {assign_to} = int(condition(input_n : input_n + {p(size)} - 1))
+            input_n = input_n + {p(size)}'''
+
+                else:
+                    code += f'''
+            {assign_to} = reshape(int(condition(input_n : input_n + {p(size)} - 1)), {p(shape)})
+            input_n = input_n + {p(size)}'''
+
+
+            else:
+                if len(shape) == 0:
+                    code += f'''
+            {assign_to} = condition(input_n)
+            input_n = input_n + 1'''
+
+                elif len(shape) == 1: 
+                    code += f'''
+            {assign_to} = condition(input_n : input_n + {p(size)} - 1)
+            input_n = input_n + {p(size)}'''
+
+                else:
+                    code += f'''
+            {assign_to} = reshape(condition(input_n : input_n + {p(size)} - 1), {p(shape)})
+            input_n = input_n + {p(size)}'''
+
+
         code += '''
+        
+            ! Allocate for rest of variables
+            '''
 
-            ! Initialize variables using inputs'''
+        for v, indices in self._variables.items():
+            if v in initialized:
+                continue
+            if indices:
+                name = printer.fortran_name(v.name)
+                ranges = ",".join(f"{p(start)}:{p(end)}" for i, start, end in indices)
+                code += f'''
+            allocate({name}({ranges}))
+            {name} = ieee_value({name}, ieee_quiet_nan)
+            '''
 
-        for n, v in enumerate(self._inputs):
-            code += f'''
-            {p(v)} = condition({len(self._constants) + n + 1})'''
 
         code += f'''
 
@@ -252,7 +331,7 @@ class Solver(SolverBlock):
         for name, indices in self._functions.items():
             if indices:
                 f_name = printer.fortran_name(name)
-                ranges = ",".join(f"int({p(start)}):int({p(end)})" for i, start, end in indices)
+                ranges = ",".join(f"{p(start)}:{p(end)}" for i, start, end in indices)
                 code += f'''
             allocate({f_name}({ranges}))
             {f_name} = ieee_value({f_name}, ieee_quiet_nan)'''
@@ -280,10 +359,18 @@ class Solver(SolverBlock):
         '''
         for v in self._variables:
             if v.indices:
-                code += f'''
+                if v.space == space.Z:
+                    code += f'''
+            write(log_unit) real({printer.print_as_array_arg(v)}, kind=8)'''
+                else:
+                    code += f'''
             write(log_unit) {printer.print_as_array_arg(v)}'''
             else:
-                code += f'''
+                if v.space == space.Z:
+                    code += f'''
+            write(log_unit) real({p(v)}, kind=8)'''
+                else:
+                    code += f'''
             write(log_unit) {p(v)}'''
 
         code += f'''
@@ -299,6 +386,8 @@ class Solver(SolverBlock):
             print *, "Completed"
             call flush(6)
             close(log_unit)
+            status = 0
+            message = 'OK'
         end subroutine run_solver
         '''
 
@@ -350,21 +439,34 @@ class Solver(SolverBlock):
 
         return module
 
-    def run(self, condition: dict[Function, float]) -> dict[Function | str, float | np.ndarray]:
+    def run(self, condition: dict[Variable, Any]) -> dict[Variable | str, float | np.ndarray]:
         if self._generated is None:
             raise RuntimeError('Solver has not been compiled. Use "with Solver() as solver:" syntax.')
 
         condition_values = []
+        condition_evaled: dict[Variable, Any] = {}
 
         for c in self._constants:
             if c not in condition:
                 raise ValueError(f'Constant {c} not provided in condition.')
-            condition_values.append(float(condition[c]))
+            if self._shape_of(c, condition_evaled) != np.shape(condition[c]):
+                raise ValueError(f'Constant {c} has shape {self._shape_of(c, condition_evaled)}, but got {np.shape(condition[c])}.')
+            if np.ndim(condition[c]) == 0:
+                condition_values.append(float(condition[c]))
+                condition_evaled[c] = condition[c]
+            else:
+                condition_values.extend(float(v) for v in np.ravel(condition[c], order='F'))
+                condition_evaled[c] = condition[c]
 
         for v in self._inputs:
             if v not in condition:
                 raise ValueError(f'Input variable {v} not provided in condition.')
-            condition_values.append(float(condition[v]))
+            if self._shape_of(v, condition_evaled) != np.shape(condition[v]):
+                raise ValueError(f'Input variable {v} has shape {self._shape_of(v, condition_evaled)}, but got {np.shape(condition[v])}.')
+            if np.ndim(condition[v]) == 0:
+                condition_values.append(float(condition[v]))
+            else:
+                condition_values.extend(float(v) for v in np.ravel(condition[v], order='F'))
 
         result_dir = tempfile.mkdtemp()
         log_path = os.path.join(result_dir, 'result.log')
@@ -376,29 +478,36 @@ class Solver(SolverBlock):
 
         log_data = np.memmap(log_path, dtype=np.float64, mode='r')
 
+        print(f'Log data in: {log_path}, size={log_data.size}')
+
         result = {}
+        shape_constants = {}
         for c in self._constants:
             result[c] = condition[c]
+            if self._shape_of(c) == ():
+                shape_constants[c] = condition[c]
 
         offset = 0
         for v, indices in self._variables.items():
             if indices:
-                shape = tuple(int((end - start + 1).subs(condition.items())) 
+                shape = tuple(int(cast(Expr, sp.sympify(end - start + 1)).subs(shape_constants)) 
                               for i, start, end in indices)
                 size = np.prod(shape)
-                data = log_data[offset:offset + size].reshape(shape)
+                # print(v, shape, size, offset)
+                data = log_data[offset:offset + size].reshape(shape, order='F')
                 result[v] = data
                 offset += size
             else:
+                # print(v, offset, log_data[offset])
                 result[v] = log_data[offset]
                 offset += 1
 
         for name, indices in self._functions.items():
             if indices:
-                shape = tuple(int((end - start + 1).subs(condition.items())) 
+                shape = tuple(int(cast(Expr, sp.sympify(end - start + 1)).subs(shape_constants)) 
                               for i, start, end in indices)
                 size = np.prod(shape)
-                data = log_data[offset:offset + size].reshape(shape)
+                data = log_data[offset:offset + size].reshape(shape, order='F')
                 result[name] = data
                 offset += size
             else:
@@ -425,10 +534,10 @@ class ExplicitBlock(SolverBlock):
 
 
 class FunctionsBlock(SolverBlock):
-    _functions: dict[str, Function]
+    _functions: dict[str, Expr]
     _indices: tuple[Index, ...]
 
-    def __init__(self, root: 'Solver', functions: dict[str, Function], *indices: Index) -> None:
+    def __init__(self, root: 'Solver', functions: dict[str, Expr], *indices: Index) -> None:
         super().__init__(root)
         self._functions = functions
         self._indices = indices
@@ -451,10 +560,10 @@ class FunctionsBlock(SolverBlock):
 
 class IterationBlock(SolverBlock):
     index: Index
-    start: Expr
-    end: Expr
+    start: Expr | int
+    end: Expr | int
 
-    def __init__(self, root: 'Solver', index: Index, start: Expr, end: Expr) -> None:
+    def __init__(self, root: 'Solver', index: Index, start: Expr | int, end: Expr | int) -> None:
         super().__init__(root)
         self.index = index
         self.start = start
@@ -471,7 +580,7 @@ class IterationBlock(SolverBlock):
 
         code = f'''
             ! Iterate over {p(self.index)}
-            do {p(self.index)} = int({p(self.start)}), int({p(self.end)}) - 1 '''
+            do {p(self.index)} = {p(self.start)}, {p(self.end)} - 1 '''
 
         for block in self._sub_blocks:
             code += '\n'

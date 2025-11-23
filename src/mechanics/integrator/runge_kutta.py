@@ -1,7 +1,7 @@
+from typing import cast
 
-
-from mechanics.function import Function, Expr, ExplicitEquations, Index
-from mechanics.differential import to_first_order
+from mechanics.symbol import Variable, Expr, ExplicitEquations, Index, variables
+from mechanics.differential_equation import to_first_order
 from mechanics.discretization import discretization
 from mechanics.conversion import Conversion
 
@@ -12,7 +12,7 @@ from mechanics.conversion import Conversion
 #         K_3 = dt * F(X + 1/2 * K_2)
 #         X_{i+1} = X_i + 1/6 * (K_1 + 2 * K_2 + 2 * K_3 + dt * F(X + K_3))
 def rk4_explicit(F: ExplicitEquations, dt: Expr, i: Index) \
-    -> tuple[tuple[Function, ...], tuple[Function],  ExplicitEquations, Conversion]:
+    -> tuple[tuple[Variable, ...], tuple[Variable],  ExplicitEquations, Conversion]:
     F, r = to_first_order(F)
     
     t = list(F.keys())[0].args[1][0]  # type: ignore
@@ -25,13 +25,11 @@ def rk4_explicit(F: ExplicitEquations, dt: Expr, i: Index) \
     F_ = {}
     step = {}
     for dx, fX in F.items():
-        x_ = d(dx.args[0]) # type: ignore
+        x_ = cast(Variable, d(dx.args[0]))
         X.append(x_)
         f_ = d(fX)
         F_[x_] = f_
-        k1 = Function.make(f'k_{{1, {x_.name}}}', *x_.indices)
-        k2 = Function.make(f'k_{{2, {x_.name}}}', *x_.indices)
-        k3 = Function.make(f'k_{{3, {x_.name}}}', *x_.indices)
+        k1, k2, k3 = variables(f'k_{{1, {x_.name}}} k_{{2, {x_.name}}} k_{{3, {x_.name}}}', indices=x_.indices)
         K1[x_] = k1
         K2[x_] = k2
         K3[x_] = k3

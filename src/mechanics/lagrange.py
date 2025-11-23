@@ -1,8 +1,8 @@
 import sympy as sp
-from .function import Expr, Function, BaseSpace
+from .symbol import Expr, Variable, BaseSpace
 from .util import tuple_ish, to_tuple
 
-def euler_lagrange_equation(L: Expr, q: tuple_ish[Function]) -> tuple[Expr, ...]:
+def euler_lagrange_equation(L: Expr, q: tuple_ish[Variable]) -> tuple[Expr, ...]:
     base_spaces = set()
     for q_n in to_tuple(q):
         for t in q_n.base_spaces:

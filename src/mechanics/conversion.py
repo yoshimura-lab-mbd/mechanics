@@ -1,13 +1,18 @@
 from typing import Any, overload, cast
+import sympy as sp
 
-from mechanics.function import Expr, ExplicitEquations
+from mechanics.symbol import Expr, ExplicitEquations, Variable, BaseSpace
 
 
 class Conversion:
 
+
     @overload
     def __call__(self, arg: Expr) -> Expr: ...
-
+    @overload
+    def __call__(self, arg: tuple[Expr, ...]) -> tuple[Expr, ...]: ...
+    @overload
+    def __call__(self, arg: list[Expr]) -> list[Expr]: ...
     @overload
     def __call__(self, arg: ExplicitEquations) -> ExplicitEquations: ...
 
@@ -38,18 +43,21 @@ class Conversion:
         return Compose(self, other)
 
 class Replacement(Conversion):
-    _replacements: list[tuple[Expr, Expr]]
+    _subss: list[tuple[Expr, Expr]]
 
     def __init__(self, replacements: dict[Expr, Expr] | list[tuple[Expr, Expr]]):
         if isinstance(replacements, dict):
-            self._replacements = list(replacements.items())
+            self._subs = list(replacements.items())
         else:
-            self._replacements = list(replacements)
+            self._subs = replacements
 
+    def _replace_diff(self, *args) -> Expr:
+        var = args[0]
+        subs = var.base_space_subs | var.index_subs
+        return sp.Derivative(var.general_form(), *args[1:]).subs(self._subs).subs(subs)
 
     def convert_expr(self, expr: Expr) -> Expr:
-        return cast(Expr, expr.subs(self._replacements))
-
+        return cast(Expr, expr.subs(self._subs).replace(sp.Derivative, self._replace_diff))
 class Compose(Conversion):
     _conversions: tuple[Conversion, ...]
 
