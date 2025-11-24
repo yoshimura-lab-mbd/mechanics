@@ -42,9 +42,9 @@ def test_kepler():
         solver.variables(*X, *K, index=(i, 0, T/h))
         solver.functions('x', 'y', 'E', index=(i, 0, T/h))
         solver.inputs(*(x[0] for x in X))
-        with solver.steps(i, 0, T/h) as step:
-            step.solve_explicit(rk4_step)
-            step.calculate({'x': d(x), 'y': d(y), 'E': d(E)}, i)
+        with solver.steps(i, 0, T/h):
+            solver.explicit(rk4_step)
+            solver.calculate({'x': d(x), 'y': d(y), 'E': d(E)}, i)
     
     _ = solver.run({
         mu: 1.0, m: 1.0, 

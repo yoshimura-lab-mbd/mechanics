@@ -3,7 +3,7 @@ import os
 import sys
 import tempfile
 import importlib.util
-import importlib.resources
+from contextlib import contextmanager
 import shutil
 import subprocess
 import sympy.printing.fortran
@@ -54,34 +54,35 @@ class FortranPrinter(sympy.printing.fortran.FCodePrinter):
                 args.append(':')
             else:
                 args.append(f'{self.doprint(value)}')
+
         return f'{self.fortran_name(f.name)}({",".join(args)})'
 
 
 class SolverBlock:
     _root: 'Solver'
-    _sub_blocks: list['SolverBlock']
 
     def __init__(self, root: 'Solver') -> None:
         self._root = root
-        self._sub_blocks = []
-
-    def solve_explicit(self, equations: ExplicitEquations)-> Self:
-        block = ExplicitBlock(self._root, equations)
-        self._sub_blocks.append(block)
-        return self
-
-    def calculate(self, functions: dict[str, Expr], *indices: Index) -> Self:
-        block = FunctionsBlock(self._root, functions, *indices)
-        self._sub_blocks.append(block)
-        return self
-
-    def steps(self, index: Index, start: Expr | int, end: Expr | int) -> 'IterationBlock':
-        block = IterationBlock(self._root, index, start, end)
-        self._sub_blocks.append(block)
-        return block
 
     def _generate(self, printer: FortranPrinter) -> str:
         return ''
+
+    def _get_indices(self) -> set[Index]:
+        return set()
+
+class NestBlock(SolverBlock):
+    _sub_blocks: list[SolverBlock]
+
+    def __init__(self, root: 'Solver') -> None:
+        super().__init__(root)
+        self._sub_blocks = []
+
+    def _generate(self, printer: FortranPrinter) -> str:
+        code = ''
+        for block in self._sub_blocks:
+            code += block._generate(printer)
+            code += '\n'
+        return code
 
     def _get_indices(self) -> set[Index]:
         indices = set()
@@ -89,21 +90,118 @@ class SolverBlock:
             indices |= block._get_indices()
         return indices
 
-class Solver(SolverBlock):
+class ExplicitBlock(SolverBlock):
+    _equations: ExplicitEquations
+
+    def __init__(self, root: 'Solver', equations: ExplicitEquations) -> None:
+        super().__init__(root)
+        self._equations = equations
+
+    def _generate(self, printer: FortranPrinter) -> str:
+        p = printer.doprint
+
+        code = '\n! Solve explicit equations\n'
+        for l, r in self._equations.items():
+            code += f'{p(l)} = {p(r)}\n'
+
+        return code
+
+
+class FunctionsBlock(SolverBlock):
+    _functions: dict[str, Expr]
+    _indices: tuple[Index, ...]
+
+    def __init__(self, root: 'Solver', functions: dict[str, Expr], *indices: Index) -> None:
+        super().__init__(root)
+        self._functions = functions
+        self._indices = indices
+
+    def _generate(self, printer: FortranPrinter) -> str:
+        p = printer.doprint
+
+        indices = ",".join([str(p(i)) for i in self._indices])
+
+        code = '! Calculate functions\n'
+        for name, f in self._functions.items():
+            name = printer.fortran_name(name)
+            if indices:
+                code += f'{name}({indices}) = {p(f)}\n'
+            else:
+                code += f'{name} = {p(f)}\n'
+
+        return code
+
+
+class IterationBlock(NestBlock):
+    index: Index
+    start: Expr | int
+    end: Expr | int
+
+    def __init__(self, root: 'Solver', index: Index, start: Expr | int, end: Expr | int) -> None:
+        super().__init__(root)
+        self.index = index
+        self.start = start
+        self.end = end
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        pass
+
+    def _generate(self, printer: FortranPrinter) -> str:
+        p = printer.doprint
+
+        code = f'''
+            ! Iterate over {p(self.index)}
+            do {p(self.index)} = {p(self.start)}, {p(self.end)} - 1 '''
+
+        for block in self._sub_blocks:
+            code += '\n'
+            code += textwrap.indent(block._generate(printer), '    ' * 4)
+
+        code += f'''
+            end do
+        '''
+
+        return textwrap.dedent(code)
+
+    def _get_indices(self) -> set[Index]:
+        indices = super()._get_indices()
+        indices.add(self.index)
+        return indices
+
+
+
+
+class Solver(NestBlock):
     _variables: dict[Variable, list[tuple[Index, Expr | int, Expr | int]]]
     _functions: dict[str, list[tuple[Index, Expr | int, Expr | int]]]
     _constants: list[Variable]
     _inputs: list[Variable]
 
+    _context: NestBlock
+
     _generated: Any
     _generate_dir: Optional[str]
 
-    def __init__(self) -> None:
+    _bound_check: bool
+    _dependency_check: bool
+
+    def __init__(self, 
+                 bound_check: bool = True, 
+                 dependency_check: bool = True) -> None:
         super().__init__(self)
         self._variables = {}
         self._functions = {}
         self._constants = []
         self._inputs = []
+
+        self._context = self
+
+        self._bound_check = bound_check
+        self._dependency_check = dependency_check
+
         self._generate_dir = None
         
     def __del__(self):
@@ -160,6 +258,24 @@ class Solver(SolverBlock):
         self._inputs.extend(inputs)
         return self
 
+    def explicit(self, equations: ExplicitEquations) -> Self:
+        block = ExplicitBlock(self._root, equations)
+        self._context._sub_blocks.append(block)
+        return self
+
+    def calculate(self, functions: dict[str, Expr], *indices: Index) -> Self:
+        block = FunctionsBlock(self._root, functions, *indices)
+        self._context._sub_blocks.append(block)
+        return self
+
+    @contextmanager
+    def steps(self, index: Index, start: Expr | int, end: Expr | int):
+        block = IterationBlock(self._root, index, start, end)
+        self._context._sub_blocks.append(block)
+        context_back = self._context
+        self._context = block
+        yield
+        self._context = context_back
 
     def __enter__(self) -> Self:
         return self
@@ -382,7 +498,6 @@ class Solver(SolverBlock):
 
         code += f'''
 
-
             print *, "Completed"
             call flush(6)
             close(log_unit)
@@ -416,6 +531,7 @@ class Solver(SolverBlock):
             sys.executable, '-m', 'numpy.f2py', '-m', generated_name, 
             '-c', 'generated.f90'] + lib_files 
             + ['--build-dir', 'build', '--f90flags="-Wno-unused-dummy-argument"']
+            + (['--f90flags="-fcheck=bounds"'] if self._bound_check else [])
             ,
             env=env, cwd=self._generate_dir,
             stdout=subprocess.PIPE,
@@ -515,87 +631,4 @@ class Solver(SolverBlock):
                 offset += 1
 
         return result
-
-class ExplicitBlock(SolverBlock):
-    _equations: ExplicitEquations
-
-    def __init__(self, root: 'Solver', equations: ExplicitEquations) -> None:
-        super().__init__(root)
-        self._equations = equations
-
-    def _generate(self, printer: FortranPrinter) -> str:
-        p = printer.doprint
-
-        code = '\n! Solve explicit equations\n'
-        for l, r in self._equations.items():
-            code += f'{p(l)} = {p(r)}\n'
-
-        return code
-
-
-class FunctionsBlock(SolverBlock):
-    _functions: dict[str, Expr]
-    _indices: tuple[Index, ...]
-
-    def __init__(self, root: 'Solver', functions: dict[str, Expr], *indices: Index) -> None:
-        super().__init__(root)
-        self._functions = functions
-        self._indices = indices
-
-    def _generate(self, printer: FortranPrinter) -> str:
-        p = printer.doprint
-
-        indices = ",".join([str(p(i)) for i in self._indices])
-
-        code = '! Calculate functions\n'
-        for name, f in self._functions.items():
-            name = printer.fortran_name(name)
-            if indices:
-                code += f'{name}({indices}) = {p(f)}\n'
-            else:
-                code += f'{name} = {p(f)}\n'
-
-        return code
-
-
-class IterationBlock(SolverBlock):
-    index: Index
-    start: Expr | int
-    end: Expr | int
-
-    def __init__(self, root: 'Solver', index: Index, start: Expr | int, end: Expr | int) -> None:
-        super().__init__(root)
-        self.index = index
-        self.start = start
-        self.end = end
-
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        pass
-
-    def _generate(self, printer: FortranPrinter) -> str:
-        p = printer.doprint
-
-        code = f'''
-            ! Iterate over {p(self.index)}
-            do {p(self.index)} = {p(self.start)}, {p(self.end)} - 1 '''
-
-        for block in self._sub_blocks:
-            code += '\n'
-            code += textwrap.indent(block._generate(printer), '    ' * 4)
-
-        code += f'''
-            end do
-        '''
-
-        return textwrap.dedent(code)
-
-    def _get_indices(self) -> set[Index]:
-        indices = super()._get_indices()
-        indices.add(self.index)
-        return indices
-
-
 

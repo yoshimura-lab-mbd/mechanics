@@ -43,7 +43,7 @@ def modified_euler_explicit(F: ExplicitEquations, dt: Expr, i: Index) \
         X.add(x_)
         f_ = d(fX)
         F_[x_] = f_
-        k, = variables(f'k_{{{x_.name}}}', indices=x_.indices)
+        k, = variables(f'k_{{{x_.name}}}', *x_.index_subs.keys())
         K[x_] = k
         step[k] = dt * f_
 

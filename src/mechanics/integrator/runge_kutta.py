@@ -29,7 +29,7 @@ def rk4_explicit(F: ExplicitEquations, dt: Expr, i: Index) \
         X.append(x_)
         f_ = d(fX)
         F_[x_] = f_
-        k1, k2, k3 = variables(f'k_{{1, {x_.name}}} k_{{2, {x_.name}}} k_{{3, {x_.name}}}', indices=x_.indices)
+        k1, k2, k3 = variables(f'k_{{1, {x_.name}}} k_{{2, {x_.name}}} k_{{3, {x_.name}}}', *x_.index_subs.keys())
         K1[x_] = k1
         K2[x_] = k2
         K3[x_] = k3
