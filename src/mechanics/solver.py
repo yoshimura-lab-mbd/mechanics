@@ -106,6 +106,9 @@ class NestBlock(SolverBlock):
 
 class ExplicitBlock(SolverBlock):
     _equations: ExplicitEquations
+
+    _bounds_checks: defaultdict[Variable, list[int]]
+    _bounds_sources: dict[int, tuple[Variable, Variable, Expr]]
     _dependency_checks: defaultdict[Variable, list[int]]
     _dependency_sources: dict[int, tuple[Variable, Variable, Expr]]
     _frame_info: inspect.FrameInfo
@@ -113,6 +116,9 @@ class ExplicitBlock(SolverBlock):
     def __init__(self, root: 'Solver', equations: ExplicitEquations) -> None:
         super().__init__(root)
         self._equations = equations
+
+        self._bounds_checks = defaultdict(list)
+        self._bounds_sources = {}
         self._dependency_checks = defaultdict(list)
         self._dependency_sources = {}
 
@@ -135,6 +141,9 @@ class ExplicitBlock(SolverBlock):
 
             for check in checks:
                 key = self._gen_key()
+                self._bounds_checks[l].append(key)
+                self._bounds_sources[key] = (check, l, r)
+                key = self._gen_key()
                 self._dependency_checks[l].append(key)
                 self._dependency_sources[key] = (check, l, r)
 
@@ -145,6 +154,17 @@ class ExplicitBlock(SolverBlock):
         p = printer.doprint
 
         code = '\n! Solve explicit equations\n'
+
+        if self._root._bounds_check:
+            for l, r in self._equations.items():
+                for key in self._bounds_checks[l]:
+                    var, _, _ = self._bounds_sources[key]
+                    ranges = self._root._range_of(var.general_form())
+                    condition = ' .or. '.join(
+                        f'{p(i)} < {p(lower)} .or. {p(i)} > {p(upper)}' 
+                        for (_, lower, upper), i in zip(ranges, var.indices))
+                    code += f'if ({condition}) error = {key}\n'
+
         for l, r in self._equations.items():
             if self._root._dependency_check:
                 for key in self._dependency_checks[l]:
@@ -160,8 +180,14 @@ class ExplicitBlock(SolverBlock):
     def _receive_error(self, key: int):
         if key in self._dependency_sources:
             var, l, r = self._dependency_sources[key]
-            raise ValueError(
-                f'Variable {var} used before calculation in explicit equation: {l} = {r}.'
+            raise DependencyError(
+                f'Variable {var} used before calculation in explicit equation: {l} = {r}'
+                + '\n at ' + format_frameinfo(self._frame_info)
+                )
+        elif key in self._bounds_sources:
+            var, l, r = self._bounds_sources[key]
+            raise IndexError(
+                f'Variable {var} out of bounds in explicit equation: {l} = {r}'
                 + '\n at ' + format_frameinfo(self._frame_info)
                 )
 
@@ -234,8 +260,8 @@ class IterationBlock(NestBlock):
 
 
 class Solver(NestBlock):
-    _variables: dict[Variable, list[tuple[Index, Expr | int, Expr | int]]]
-    _functions: dict[str, list[tuple[Index, Expr | int, Expr | int]]]
+    _variables: dict[Variable, list[tuple[Index, Expr, Expr]]]
+    _functions: dict[str, list[tuple[Index, Expr, Expr]]]
     _constants: list[Variable]
     _inputs: list[Variable]
 
@@ -244,11 +270,11 @@ class Solver(NestBlock):
     _generated: Any
     _generate_dir: Optional[str]
 
-    _bound_check: bool
+    _bounds_check: bool
     _dependency_check: bool
 
     def __init__(self, 
-                 bound_check: bool = True, 
+                 bounds_check: bool = True, 
                  dependency_check: bool = True) -> None:
         super().__init__(self)
         self._variables = {}
@@ -258,7 +284,7 @@ class Solver(NestBlock):
 
         self._context = self
 
-        self._bound_check = bound_check
+        self._bounds_check = bounds_check
         self._dependency_check = dependency_check
 
         self._generate_dir = None
@@ -296,7 +322,7 @@ class Solver(NestBlock):
                 if unknowns:
                     raise ValueError(f'Index specification {index} contains unknown constants: {unknowns}. '
                                       'Add them using .constants() first.')
-            self._variables[var] = indices
+            self._variables[var] = tuple(sp.sympify(i) for i in indices) #type: ignore
 
         return self
 
@@ -311,7 +337,7 @@ class Solver(NestBlock):
                 raise TypeError(f"Expected Index, got {i} which has type {type(i)})")
         
         for name in names:
-            self._functions[name] = indices
+            self._functions[name] = tuple(sp.sympify(i) for i in indices) #type: ignore
 
         return self
 
@@ -347,6 +373,12 @@ class Solver(NestBlock):
         # print(code)
 
         self._generated = self._compile_and_load(code)
+
+    def _range_of(self, var: Variable) -> tuple[tuple[Index, Expr, Expr], ...]:
+        var_shape = self._variables.get(var.general_form(), None)
+        if var_shape is None:
+            raise ValueError(f'Variable {var} not defined in solver.')
+        return tuple(var_shape)
 
     def _shape_of(self, var: Variable, subs: Any = {}) -> tuple[Expr, ...]:
         shape = []
@@ -688,3 +720,6 @@ class Solver(NestBlock):
 
         return result
 
+
+class DependencyError(ValueError):
+    pass
