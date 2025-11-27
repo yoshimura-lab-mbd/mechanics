@@ -8,12 +8,13 @@ import shutil
 import subprocess
 import sympy.printing.fortran
 import textwrap
-import time
+from collections import defaultdict
+import inspect
 import numpy as np
 import sympy as sp
 
 from mechanics.symbol import ExplicitEquations, Variable, Expr, Index
-from mechanics.util import python_name, to_tuple, tuple_ish
+from mechanics.util import format_frameinfo, python_name, to_tuple, tuple_ish, format_frameinfo
 import mechanics.space as space
 
 class FortranPrinter(sympy.printing.fortran.FCodePrinter):
@@ -61,6 +62,8 @@ class FortranPrinter(sympy.printing.fortran.FCodePrinter):
 class SolverBlock:
     _root: 'Solver'
 
+    _key_counter: int = 0
+
     def __init__(self, root: 'Solver') -> None:
         self._root = root
 
@@ -69,6 +72,13 @@ class SolverBlock:
 
     def _get_indices(self) -> set[Index]:
         return set()
+
+    def _gen_key(self) -> int:
+        SolverBlock._key_counter += 1
+        return SolverBlock._key_counter
+
+    def _receive_error(self, key: int):
+        pass
 
 class NestBlock(SolverBlock):
     _sub_blocks: list[SolverBlock]
@@ -90,21 +100,70 @@ class NestBlock(SolverBlock):
             indices |= block._get_indices()
         return indices
 
+    def _receive_error(self, key: int):
+        for block in self._sub_blocks:
+            block._receive_error(key)
+
 class ExplicitBlock(SolverBlock):
     _equations: ExplicitEquations
+    _dependency_checks: defaultdict[Variable, list[int]]
+    _dependency_sources: dict[int, tuple[Variable, Variable, Expr]]
+    _frame_info: inspect.FrameInfo
 
     def __init__(self, root: 'Solver', equations: ExplicitEquations) -> None:
         super().__init__(root)
         self._equations = equations
+        self._dependency_checks = defaultdict(list)
+        self._dependency_sources = {}
+
+        checked_dependencies = set()
+
+        self._frame_info = inspect.stack()[2]
+
+        for l, r in equations.items():
+            if not isinstance(l, Variable):
+                raise TypeError(f'Left-hand side of explicit equation must be a Variable, got {type(l)}: {l} = {r}.')
+            dependencies = r.atoms(Variable) - checked_dependencies
+            checks = []
+            for var in dependencies:
+                if var.general_form() in self._root._constants:
+                    pass 
+                elif var.general_form() in self._root._variables:
+                    checks.append(var)
+                else:
+                    raise ValueError(f'Variable {var} used before definition in explicit equation: {l} = {r}.')
+
+            for check in checks:
+                key = self._gen_key()
+                self._dependency_checks[l].append(key)
+                self._dependency_sources[key] = (check, l, r)
+
+            checked_dependencies |= dependencies
+
 
     def _generate(self, printer: FortranPrinter) -> str:
         p = printer.doprint
 
         code = '\n! Solve explicit equations\n'
         for l, r in self._equations.items():
+            if self._root._dependency_check:
+                for key in self._dependency_checks[l]:
+                    var, _, _ = self._dependency_sources[key]
+                    code += f'if (ieee_is_nan({p(var)})) error = {key}\n'
+
             code += f'{p(l)} = {p(r)}\n'
 
+        code += 'if (error /= 0) goto 999\n'
+
         return code
+
+    def _receive_error(self, key: int):
+        if key in self._dependency_sources:
+            var, l, r = self._dependency_sources[key]
+            raise ValueError(
+                f'Variable {var} used before calculation in explicit equation: {l} = {r}.'
+                + '\n at ' + format_frameinfo(self._frame_info)
+                )
 
 
 class FunctionsBlock(SolverBlock):
@@ -203,6 +262,8 @@ class Solver(NestBlock):
         self._dependency_check = dependency_check
 
         self._generate_dir = None
+
+        SolverBlock._key_counter = 0
         
     def __del__(self):
         if self._generate_dir and os.path.exists(self._generate_dir):
@@ -319,7 +380,7 @@ class Solver(NestBlock):
 
         code = ''
         code += f'''
-        subroutine run_solver(log_path, condition, status, message)
+        subroutine run_solver(log_path, condition, error)
             use, intrinsic :: ieee_arithmetic
             implicit none
             double precision dnrm2
@@ -327,8 +388,7 @@ class Solver(NestBlock):
 
             character(len=*), intent(in) :: log_path
             real(8), dimension(:), intent(in) :: condition
-            integer, intent(out) :: status
-            character(len=100), intent(out) :: message
+            integer, intent(out) :: error
 
             integer :: input_n
 
@@ -454,9 +514,6 @@ class Solver(NestBlock):
                 
         code += f'''
 
-            print *, "Started"
-            ! print *, "Output in ", log_path
-
             open(unit=log_unit, file=log_path, form='unformatted',&
                  access='stream', status='replace', iostat=ios)
             if (ios /= 0) then
@@ -464,6 +521,7 @@ class Solver(NestBlock):
                stop 1
             end if
 
+            error = 0
         '''
 
         for block in self._sub_blocks:
@@ -471,6 +529,8 @@ class Solver(NestBlock):
             code += '\n'
 
         code += f'''
+        999 continue
+
             ! Write variables to log
         '''
         for v in self._variables:
@@ -498,11 +558,8 @@ class Solver(NestBlock):
 
         code += f'''
 
-            print *, "Completed"
             call flush(6)
             close(log_unit)
-            status = 0
-            message = 'OK'
         end subroutine run_solver
         '''
 
@@ -531,7 +588,6 @@ class Solver(NestBlock):
             sys.executable, '-m', 'numpy.f2py', '-m', generated_name, 
             '-c', 'generated.f90'] + lib_files 
             + ['--build-dir', 'build', '--f90flags="-Wno-unused-dummy-argument"']
-            + (['--f90flags="-fcheck=bounds"'] if self._bound_check else [])
             ,
             env=env, cwd=self._generate_dir,
             stdout=subprocess.PIPE,
@@ -587,10 +643,10 @@ class Solver(NestBlock):
         result_dir = tempfile.mkdtemp()
         log_path = os.path.join(result_dir, 'result.log')
 
-        status, message = self._generated.run_solver(log_path, condition_values)
-        if status != 0:
-            time.sleep(0.1)
-            raise RuntimeError(message.decode('utf-8'))
+        error = self._generated.run_solver(log_path, condition_values)
+        if error != 0:
+            self._receive_error(error)
+            # raise RuntimeError(f'Solver execution failed with error code {error}.')
 
         log_data = np.memmap(log_path, dtype=np.float64, mode='r')
 

@@ -1,5 +1,6 @@
 import pytest
 
+from sympy import sin, cos, diff, solve
 from mechanics import *
 from mechanics.lagrange import euler_lagrange_equation
 import mechanics.space as space

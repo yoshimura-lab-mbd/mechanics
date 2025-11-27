@@ -2,6 +2,8 @@ from typing import Union, TypeVar
 from numbers import Number
 from itertools import product, count
 import string
+import inspect
+import linecache
 
 T = TypeVar('T')
 
@@ -71,3 +73,26 @@ def generate_prefixes():
     for n in count(1):  # prefix length
         for comb in product(letters, repeat=n):
             yield ''.join(comb)
+
+
+
+RED   = "\033[31m"
+CYAN  = "\033[36m"
+BOLD  = "\033[1m"
+RESET = "\033[0m"
+
+def format_frameinfo(fi: inspect.FrameInfo, cursor_col=None):
+    filename = fi.filename
+    lineno   = fi.lineno
+    code     = linecache.getline(filename, lineno).rstrip()
+
+    out = []
+    out.append(f"{BOLD}{CYAN}File \"{filename}\", line {lineno}{RESET}")
+    out.append(f"  {code}")
+
+    if cursor_col is not None and cursor_col <= len(code):
+        pointer = " " * (cursor_col + 2) + f"{RED}^{RESET}"
+        out.append(pointer)
+
+    return "\n".join(out)
+
