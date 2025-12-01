@@ -38,14 +38,15 @@ def test_kepler():
     r, theta = d(q)
     v_r, v_theta = d(dq)
 
-    with Solver() as solver:
-        solver.constants(mu, m, h, T)
-        solver.variables(*X, *K, index=(i, 0, T/h))
-        solver.functions('x', 'y', 'E', index=(i, 0, T/h))
-        solver.inputs(*(x[0] for x in X))
-        with solver.steps(i, 0, T/h):
-            solver.explicit(rk4_step)
-            solver.calculate({'x': d(x), 'y': d(y), 'E': d(E)}, i)
+    solver = build_solver()
+    solver.constants(mu, m, h, T)
+    solver.variables(*X, *K, index=(i, 0, T/h))
+    solver.functions('x', 'y', 'E', index=(i, 0, T/h))
+    solver.inputs(*(x[0] for x in X))
+    with solver.steps(i, 0, T/h) as step:
+        step.explicit(rk4_step)
+        step.calculate({'x': d(x), 'y': d(y), 'E': d(E)}, i)
+    solver = solver.generate()
     
     _ = solver.run({
         mu: 1.0, m: 1.0, 

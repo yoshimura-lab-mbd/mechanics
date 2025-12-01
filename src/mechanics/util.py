@@ -4,9 +4,11 @@ from itertools import product, count
 import string
 import inspect
 import linecache
+import sympy as sp
 
 T = TypeVar('T')
 
+tuple_or_list = Union[tuple[T, ...], list[T]]
 tuple_ish = Union[T, tuple[T, ...], list[T]]
 single_or_tuple = Union[T, tuple[T, ...]]
 
@@ -96,3 +98,6 @@ def format_frameinfo(fi: inspect.FrameInfo, cursor_col=None):
 
     return "\n".join(out)
 
+
+def sympify(expr: sp.Expr | int) -> sp.Expr:
+    return sp.sympify(expr) # type: ignore
