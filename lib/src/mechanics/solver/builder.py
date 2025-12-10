@@ -4,9 +4,10 @@ import textwrap
 import inspect
 import sympy as sp
 
-from mechanics.symbol import ExplicitEquations, ImplicitEquations, Variable, Expr, Index
+from mechanics.symbol import ExplicitEquations, ImplicitEquations, Variable, Expr, Index, IndexRange
 from mechanics.util import format_frameinfo, sympify, to_tuple, tuple_ish, format_frameinfo
 import mechanics.space as space
+from sympy.matrices.repmatrix import index_
 from .fortran import FortranPrinter
 from .runner import ErrorReceiver, SolverRunner
 
@@ -213,7 +214,7 @@ class StepsBlock(SolverBlock):
 
         code = f'''
             ! Iterate over {p(self.index)}
-            do {p(self.index)} = {p(self.start)}, {p(self.end)} - 1 '''
+            do {p(self.index)} = {p(self.start)}, {p(self.end)}'''
 
         for element in self._elements:
             code += '\n'
@@ -227,8 +228,8 @@ class StepsBlock(SolverBlock):
 
 class SolverBuilder(SolverBlock):
     _indices: set[Index]
-    _variables: dict[Variable, list[tuple[Index, Expr, Expr]]]
-    _functions: dict[str, list[tuple[Index, Expr, Expr]]]
+    _variables: dict[Variable, tuple[IndexRange, ...]]
+    _functions: dict[str, tuple[IndexRange, ...]]
     _constants: list[Variable]
     _inputs: list[Variable]
 
@@ -264,24 +265,25 @@ class SolverBuilder(SolverBlock):
         if index:
             indices = [index] + indices
 
-        indices_ = [(i, sympify(lower), sympify(upper)) for i, lower, upper in indices]
+        index_ranges = tuple(IndexRange(i, sympify(lower), sympify(upper)) 
+                             for i, lower, upper in indices)
 
 
-        for i, start, end in indices_:
-            if not isinstance(i, Index):
-                raise TypeError(f"Expected Index, got {i} which has type {type(i)})")
+        for range in index_ranges:
+            if not isinstance(range.index, Index):
+                raise TypeError(f"Expected Index, got {range.index} which has type {type(range.index)})")
 
         for var in variables:
             unknowns = self._unknowns_of(var.args)
             if unknowns:
                 raise ValueError(f'{var} contains unknown variables or constants: {unknowns}. '
                                   'Add them using .variables() or .constants() first.')
-            for index in indices_:
-                unknowns = self._unknowns_of(index)
+            for range in index_ranges:
+                unknowns = self._unknowns_of([range.start, range.end])
                 if unknowns:
-                    raise ValueError(f'Index specification {index} contains unknown constants: {unknowns}. '
+                    raise ValueError(f'Index specification {range} contains unknown constants: {unknowns}. '
                                       'Add them using .constants() first.')
-            self._variables[var] = tuple(sp.sympify(i) for i in indices_) #type: ignore
+            self._variables[var] = index_ranges
 
         return self
 
@@ -290,13 +292,16 @@ class SolverBuilder(SolverBlock):
                   indices: list[tuple[Index, Expr | int, Expr | int]] = []) -> Self:
         if index:
             indices = [index] + indices
+
+        index_ranges = tuple(IndexRange(i, sympify(lower), sympify(upper)) 
+                             for i, lower, upper in indices)
         
-        for i, start, end in indices:
-            if not isinstance(i, Index):
-                raise TypeError(f"Expected Index, got {i} which has type {type(i)})")
+        for range in index_ranges:
+            if not isinstance(range.index, Index):
+                raise TypeError(f"Expected Index, got {range.index} which has type {type(range.index)})")
         
         for name in names:
-            self._functions[name] = tuple(sp.sympify(i) for i in indices) #type: ignore
+            self._functions[name] = index_ranges
 
         return self
 
@@ -310,10 +315,10 @@ class SolverBuilder(SolverBlock):
         code = self._generate(printer)
         return SolverRunner(
             code, self,
-            constants = {c: self._shape_of(c) for c in self._constants},
-            variables = {v: self._shape_of(v) for v in self._variables},
-            inputs = {v: self._shape_of(v) for v in self._inputs},
-            functions = {name: self._shape_of(name) for name in self._functions}
+            constants = {c: self._ranges_of(c) for c in self._constants},
+            variables = {v: self._ranges_of(v) for v in self._variables},
+            inputs = {v: self._ranges_of(v) for v in self._inputs},
+            functions = {name: self._ranges_of(name) for name in self._functions}
         )
 
     def _register_indices(self, *index: Index):
@@ -322,29 +327,28 @@ class SolverBuilder(SolverBlock):
     def _require_newton_size(self, size: Expr):
         self._newton_sizes.append(size)
 
-    def _range_of(self, var: Variable) -> tuple[tuple[Index, Expr, Expr], ...]:
-        var_shape = self._variables.get(var.general_form(), None)
-        if var_shape is None:
-            raise ValueError(f'Variable {var} not defined in solver.')
-        return tuple(var_shape)
+    def _ranges_of(self, var: Variable | str) -> tuple[IndexRange, ...]:
+        if isinstance(var, str):
+            var_ranges = self._functions.get(var, None)
+            if var_ranges is None:
+                raise ValueError(f'Function {var} not defined in solver.')
+            indices = {range.index: range.index for range in var_ranges}
+        else:
+            var_ranges = self._variables.get(var.general_form(), None)
+            if var_ranges is None:
+                raise ValueError(f'Variable {var} not defined in solver.')
+            indices = var.index_subs
+        
+        ranges = []
+        for range in var_ranges:
+            if indices[range.index] == range.index:
+                ranges.append(range)
+        return tuple(ranges)
 
     def _shape_of(self, var: Variable | str, subs: Any = {}) -> tuple[Expr, ...]:
         shape = []
-        if isinstance(var, str):
-            var_shape = self._functions.get(var, None)
-            if var_shape is None:
-                raise ValueError(f'Function {var} not defined in solver.')
-            indices = {i: i for i, start, end in var_shape}
-        else:
-            var_shape = self._variables.get(var.general_form(), None)
-            if var_shape is None:
-                raise ValueError(f'Variable {var} not defined in solver.')
-
-            indices = var.index_subs
-        
-        for i, start, end in var_shape:
-            if indices[i] == i:
-                shape.append(sp.sympify(end - start + 1).subs(subs))
+        for range in self._ranges_of(var):
+            shape.append(sp.sympify(range.end - range.start + 1).subs(subs))
         return tuple(shape)
 
     def _size_of(self, var: Variable) -> Expr:
@@ -368,10 +372,10 @@ class SolverBuilder(SolverBlock):
         return tuple(shape)
 
     def _bound_condition_of(self, var: Variable) -> Expr:
-        ranges = self._range_of(var.general_form())
+        ranges = self._ranges_of(var)
         condition = sp.S.true
-        for (_, lower, upper), i in zip(ranges, var.indices):
-            condition = condition & ((lower <= i) & (i <= upper))
+        for range in ranges:
+            condition = condition & ((range.start <= range.index) & (range.index <= range.end))
         return condition
 
     def _unknowns_of(self, exprs: tuple_ish[Expr]) -> set[Variable]:
@@ -453,13 +457,13 @@ class SolverBuilder(SolverBlock):
 
         for v in self._constants + self._inputs:
             var = v.general_form()
-            indices = self._variables.get(var, [])
-            if var in self._variables and indices and var not in initialized:
+            ranges = self._variables.get(var, ())
+            if var in self._variables and ranges and var not in initialized:
                 initialized.add(var)
                 name = printer.fortran_name(var.name)
-                ranges = ",".join(f"{p(start)}:{p(end)}" for i, start, end in indices)
+                ranges_str = ",".join(f"{p(r.start)}:{p(r.end)}" for r in ranges)
                 code += f'''
-            allocate({name}({ranges}))
+            allocate({name}({ranges_str}))
             {name} = ieee_value({name}, ieee_quiet_nan)'''
 
             name = printer.fortran_name(v.name)
@@ -512,14 +516,14 @@ class SolverBuilder(SolverBlock):
             ! Allocate for rest of variables
             '''
 
-        for v, indices in self._variables.items():
+        for v, ranges in self._variables.items():
             if v in initialized:
                 continue
-            if indices:
+            if ranges:
                 name = printer.fortran_name(v.name)
-                ranges = ",".join(f"{p(start)}:{p(end)}" for i, start, end in indices)
+                ranges_str = ",".join(f"{p(r.start)}:{p(r.end)}" for r in ranges)
                 code += f'''
-            allocate({name}({ranges}))
+            allocate({name}({ranges_str}))
             {name} = ieee_value({name}, ieee_quiet_nan)
             '''
 
@@ -528,12 +532,12 @@ class SolverBuilder(SolverBlock):
 
             ! Allocate for functions'''
             
-        for name, indices in self._functions.items():
-            if indices:
+        for name, ranges in self._functions.items():
+            if ranges:
                 f_name = printer.fortran_name(name)
-                ranges = ",".join(f"{p(start)}:{p(end)}" for i, start, end in indices)
+                ranges_str = ",".join(f"{p(r.start)}:{p(r.end)}" for r in ranges)
                 code += f'''
-            allocate({f_name}({ranges}))
+            allocate({f_name}({ranges_str}))
             {f_name} = ieee_value({f_name}, ieee_quiet_nan)
             '''
 

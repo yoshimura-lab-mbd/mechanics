@@ -5,8 +5,10 @@ import tempfile
 import importlib.util
 import subprocess
 import numpy as np
+import sympy as sp
 
-from mechanics.symbol import Variable, Expr
+from mechanics.symbol import Variable, Expr, Index, IndexRange
+from .python import PythonPrinter
 
 class ErrorReceiver:
     _parent: Optional['ErrorReceiver']
@@ -50,20 +52,19 @@ class ErrorReceiver:
                 return True
         return False
         
-
 class SolverRunner:
     _generated: Any
     _receiver: ErrorReceiver
-    _constants: dict[Variable, tuple[Expr, ...]]
-    _variables: dict[Variable, tuple[Expr, ...]]
-    _inputs: dict[Variable, tuple[Expr, ...]]
-    _functions: dict[str, tuple[Expr, ...]]
+    _constants: dict[Variable, tuple[IndexRange, ...]]
+    _variables: dict[Variable, tuple[IndexRange, ...]]
+    _inputs: dict[Variable, tuple[IndexRange, ...]]
+    _functions: dict[str, tuple[IndexRange, ...]]
 
     def __init__(self, source: str, receiver: ErrorReceiver,
-                 constants: dict[Variable, tuple[Expr, ...]],
-                 variables: dict[Variable, tuple[Expr, ...]],
-                 inputs: dict[Variable, tuple[Expr, ...]],
-                 functions: dict[str, tuple[Expr, ...]]):
+                 constants: dict[Variable, tuple[IndexRange, ...]],
+                 variables: dict[Variable, tuple[IndexRange, ...]],
+                 inputs: dict[Variable, tuple[IndexRange, ...]],
+                 functions: dict[str, tuple[IndexRange, ...]]):
 
         self._generated = self._compile_and_load(source)
         self._receiver = receiver
@@ -118,40 +119,66 @@ class SolverRunner:
 
         return module
 
-    def run(self, condition: dict[Variable, Any]) -> dict[Variable | str, float | np.ndarray]:
+    def eval(self, expr: Expr | float | np.ndarray, condition: dict[Variable | Index, Any]) -> float | np.ndarray:
+        if isinstance(expr, (float, np.ndarray)):
+            return expr
+        f = sp.lambdify(list(condition.keys()), expr, printer=PythonPrinter())
+        return f(*[v for v in condition.values()])
+
+    def run(self, condition: dict[Variable, Expr | float | np.ndarray]) -> dict[Variable | str, float | np.ndarray]:
 
         condition_values = []
-        condition_evaluated: dict[Variable, Any] = {}
+        condition_evaluated: dict[Variable | Index, float | np.ndarray] = {}
 
-        for c, shape in self._constants.items():
-            shape_evaluated = tuple(int(s.subs(condition_evaluated.items())) for s in shape)
+        for c, ranges in self._constants.items():
+            shape = tuple(int(self.eval(r.end - r.start + 1, condition_evaluated)) for r in ranges)
             if c not in condition:
                 raise ValueError(f'Constant {c} not provided in condition.')
-            if shape_evaluated != np.shape(condition[c]):
-                raise ValueError(f'Constant {c} has shape {shape_evaluated}, but got {np.shape(condition[c])}.')
-            if np.ndim(condition[c]) == 0:
-                condition_values.append(float(condition[c]))
-                condition_evaluated[c] = condition[c]
-            else:
-                condition_values.extend(float(v) for v in np.ravel(condition[c], order='F'))
-                condition_evaluated[c] = condition[c]
 
-        for v, shape in self._inputs.items():
-            shape_evaluated = tuple(int(s.subs(condition_evaluated.items())) for s in shape)
+            range_values = {r.index: np.arange(
+                int(self.eval(r.start, condition_evaluated)), 
+                int(self.eval(r.end, condition_evaluated)) + 1
+            ) for r in ranges}
+
+            c_evaluated = self.eval(condition[c], condition_evaluated | range_values)
+            shape_given = np.shape(c_evaluated)
+            if shape != shape_given:
+                raise ValueError(f'Constant {c} has shape {shape}, but got {shape_given}.')
+            if np.ndim(c_evaluated) == 0:
+                condition_values.append(c_evaluated)
+                condition_evaluated[c] = c_evaluated
+            else:
+                condition_values.extend(float(v) for v in np.ravel(c_evaluated, order='F'))
+                condition_evaluated[c] = c_evaluated
+
+        for v, ranges in self._inputs.items():
+            shape = tuple(int(self.eval(r.end - r.start + 1, condition_evaluated)) for r in ranges)
+
+            range_values = {r.index: np.arange(
+                int(self.eval(r.start, condition_evaluated)), 
+                int(self.eval(r.end, condition_evaluated)) + 1
+            ) for r in ranges}
+
+            v_evaluated = self.eval(condition[v], condition_evaluated | range_values)
+            shape_given = np.shape(v_evaluated)
+
             if v not in condition:
                 raise ValueError(f'Input variable {v} not provided in condition.')
-            if shape_evaluated != np.shape(condition[v]):
-                raise ValueError(f'Input variable {v} has shape {shape_evaluated}, but got {np.shape(condition[v])}.')
-            if np.ndim(condition[v]) == 0:
-                condition_values.append(float(condition[v]))
+            if shape != shape_given:
+                raise ValueError(f'Input variable {v} has shape {shape}, but got {shape_given}.')
+            if np.ndim(v_evaluated) == 0:
+                condition_values.append(v_evaluated)
             else:
-                condition_values.extend(float(v) for v in np.ravel(condition[v], order='F'))
+                condition_values.extend(v for v in np.ravel(v_evaluated, order='F'))
+
+        # print(condition_evaluated)
 
         result_dir = tempfile.mkdtemp()
         log_path = os.path.join(result_dir, 'result.log')
 
         error = self._generated.run_solver(log_path, condition_values)
         if error != 0:
+            # print(error)
             if not self._receiver.receive_error(error):
                 raise RuntimeError(f'Solver execution failed with unknown error. Error code: {error}')
 
@@ -164,28 +191,28 @@ class SolverRunner:
             result[c] = condition[c]
 
         offset = 0
-        for v, shape in self._variables.items():
-            if shape == ():
+        for v, ranges in self._variables.items():
+            if ranges == ():
                 # print(v, offset, log_data[offset])
                 result[v] = log_data[offset]
                 offset += 1
             else:
-                shape_evaluated = tuple(int(s.subs(condition_evaluated.items())) for s in shape)
-                size = np.prod(shape_evaluated)
+                shape = tuple(int(self.eval(r.end - r.start + 1, condition_evaluated)) for r in ranges)
+                size = np.prod(shape)
                 # print(v, shape, size, offset)
-                data = log_data[offset:offset + size].reshape(shape_evaluated, order='F')
+                data = log_data[offset:offset + size].reshape(shape, order='F')
                 result[v] = data
                 offset += size
 
-        for name, shape in self._functions.items():
-            if shape == ():
+        for name, ranges in self._functions.items():
+            if ranges == ():
                 # print(name, offset, log_data[offset])
                 result[name] = log_data[offset]
                 offset += 1
             else:
-                shape_evaluated = tuple(int(s.subs(condition_evaluated.items())) for s in shape)
-                size = np.prod(shape_evaluated)
-                data = log_data[offset:offset + size].reshape(shape_evaluated, order='F')
+                shape = tuple(int(self.eval(r.end - r.start + 1, condition_evaluated)) for r in ranges)
+                size = np.prod(shape)
+                data = log_data[offset:offset + size].reshape(shape, order='F')
                 result[name] = data
                 offset += size
 

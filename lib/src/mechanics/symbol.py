@@ -28,6 +28,19 @@ class Index(sp.Symbol):
     def assign(self, value: Expr) -> Expr:
         return value
 
+class IndexRange:
+    index: Index
+    start: Expr
+    end:   Expr
+
+    def __init__(self, index: Index, start: Expr, end: Expr) -> None:
+        self.index = index
+        self.start = start
+        self.end = end
+
+    def __str__(self) -> str:
+        return f'{self.index} in [{self.start}, {self.end}]'
+
 class Variable(spf.AppliedUndef, NotIterable):
     name: str
     args: tuple[Expr, ...]
