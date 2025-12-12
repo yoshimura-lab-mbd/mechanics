@@ -38,6 +38,11 @@ uv sync
 
 VSCodeの場合，Jupyter拡張機能をインストールした上で，ipynbファイルの実行ボタンを押す．初回実行時にはkernelを選択するようメッセージが出るので，`mechanics ... (.venv/bin/python)`を選択する．
 
+## ドキュメント
+
+https://yoshimura-lab-mbd.github.io/mechanics/ を参照
+
+
 # 開発
 
 ライブラリ本体は[lib/]()，ライブラリを用いた簡単な計算例は[example/]()におく．具体的な研究用プログラムはプロジェクトごとルート以下にディレクトリを作成する．
