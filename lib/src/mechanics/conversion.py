@@ -43,7 +43,7 @@ class Conversion:
         return Compose(self, other)
 
 class Replacement(Conversion):
-    _subss: list[tuple[Expr, Expr]]
+    _subs: list[tuple[Expr, Expr]]
 
     def __init__(self, replacements: dict[Expr, Expr] | list[tuple[Expr, Expr]]):
         if isinstance(replacements, dict):

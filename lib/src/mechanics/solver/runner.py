@@ -122,61 +122,71 @@ class SolverRunner:
     def eval(self, expr: Expr | float | np.ndarray, condition: dict[Variable | Index, Any]) -> float | np.ndarray:
         if isinstance(expr, (float, np.ndarray)):
             return expr
+        # print('Evaluating expression:', expr, 'with condition:', condition)
         f = sp.lambdify(list(condition.keys()), expr, printer=PythonPrinter())
         return f(*[v for v in condition.values()])
 
     def run(self, condition: dict[Variable, Expr | float | np.ndarray]) -> dict[Variable | str, float | np.ndarray]:
 
-        condition_values = []
+        condition_values = {}
         condition_evaluated: dict[Variable | Index, float | np.ndarray] = {}
+        
+        for c, value in condition.items():
+            if c in self._constants:
+                ranges = self._constants[c]
 
-        for c, ranges in self._constants.items():
-            shape = tuple(int(self.eval(r.end - r.start + 1, condition_evaluated)) for r in ranges)
-            if c not in condition:
-                raise ValueError(f'Constant {c} not provided in condition.')
+                shape = tuple(int(self.eval(r.end - r.start + 1, condition_evaluated)) for r in ranges)
 
-            range_values = {r.index: np.arange(
-                int(self.eval(r.start, condition_evaluated)), 
-                int(self.eval(r.end, condition_evaluated)) + 1
-            ) for r in ranges}
+                range_values = {r.index: np.arange(
+                    int(self.eval(r.start, condition_evaluated)), 
+                    int(self.eval(r.end, condition_evaluated)) + 1
+                ) for r in ranges}
 
-            c_evaluated = self.eval(condition[c], condition_evaluated | range_values)
-            shape_given = np.shape(c_evaluated)
-            if shape != shape_given:
-                raise ValueError(f'Constant {c} has shape {shape}, but got {shape_given}.')
-            if np.ndim(c_evaluated) == 0:
-                condition_values.append(c_evaluated)
-                condition_evaluated[c] = c_evaluated
+                c_evaluated = self.eval(condition[c], condition_evaluated | range_values)
+                shape_given = np.shape(c_evaluated)
+                if shape != shape_given:
+                    raise ValueError(f'Constant {c} has shape {shape}, but got {shape_given}.')
+                if np.ndim(c_evaluated) == 0:
+                    condition_values[c] = [c_evaluated]
+                    condition_evaluated[c] = c_evaluated
+                else:
+                    condition_values[c] = list(float(v) for v in np.ravel(c_evaluated, order='F'))
+                    condition_evaluated[c] = c_evaluated
+
+            elif c in self._inputs:
+                ranges = self._inputs[c]
+
+                shape = tuple(int(self.eval(r.end - r.start + 1, condition_evaluated)) for r in ranges)
+
+                range_values = {r.index: np.arange(
+                    int(self.eval(r.start, condition_evaluated)), 
+                    int(self.eval(r.end, condition_evaluated)) + 1
+                ) for r in ranges}
+
+                v_evaluated = self.eval(condition[c], condition_evaluated | range_values)
+                shape_given = np.shape(v_evaluated)
+
+                if shape != shape_given:
+                    raise ValueError(f'Input variable {c} has shape {shape}, but got {shape_given}.')
+                if np.ndim(v_evaluated) == 0:
+                    condition_values[c] = [v_evaluated]
+                else:
+                    condition_values[c] = list(v for v in np.ravel(v_evaluated, order='F'))
             else:
-                condition_values.extend(float(v) for v in np.ravel(c_evaluated, order='F'))
-                condition_evaluated[c] = c_evaluated
+                raise ValueError(f'Condition for variable {c} is not provided as constant or input.')
 
-        for v, ranges in self._inputs.items():
-            shape = tuple(int(self.eval(r.end - r.start + 1, condition_evaluated)) for r in ranges)
+        print(condition_values)
 
-            range_values = {r.index: np.arange(
-                int(self.eval(r.start, condition_evaluated)), 
-                int(self.eval(r.end, condition_evaluated)) + 1
-            ) for r in ranges}
-
-            v_evaluated = self.eval(condition[v], condition_evaluated | range_values)
-            shape_given = np.shape(v_evaluated)
-
-            if v not in condition:
-                raise ValueError(f'Input variable {v} not provided in condition.')
-            if shape != shape_given:
-                raise ValueError(f'Input variable {v} has shape {shape}, but got {shape_given}.')
-            if np.ndim(v_evaluated) == 0:
-                condition_values.append(v_evaluated)
-            else:
-                condition_values.extend(v for v in np.ravel(v_evaluated, order='F'))
-
-        # print(condition_evaluated)
+        condition_raw = []
+        for c in self._constants.keys():
+            condition_raw.extend(condition_values[c])
+        for v in self._inputs.keys():
+            condition_raw.extend(condition_values[v])
 
         result_dir = tempfile.mkdtemp()
         log_path = os.path.join(result_dir, 'result.log')
 
-        error = self._generated.run_solver(log_path, condition_values)
+        error = self._generated.run_solver(log_path, condition_raw)
         if error != 0:
             # print(error)
             if not self._receiver.receive_error(error):
