@@ -211,7 +211,8 @@ class Variable(spf.AppliedUndef, NotIterable):
 
     @property
     def _diff_wrt(self) -> bool:
-        return not self.is_constant
+        # return not self.is_constant
+        return True
 
 
 

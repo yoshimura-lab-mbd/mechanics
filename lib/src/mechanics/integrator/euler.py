@@ -75,7 +75,7 @@ def backward_euler_explicit(F: ExplicitEquations, dt: Expr, i: Index) \
     for dx, fX in F.items():
         x_ = cast(Variable, d(cast(Expr, dx.args[0])))
         X.add(x_.general_form())
-        step.append(x_.subs(i, i + 1) - x_ + dt * d(fX).subs(i, i + 1))
+        step.append(x_.subs(i, i + 1) - x_ - dt * d(fX).subs(i, i + 1))
         unknowns.append(x_.subs(i, i + 1))
 
     return tuple(X), tuple(unknowns), tuple(step), d * r

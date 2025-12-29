@@ -9,246 +9,18 @@ from mechanics.util import format_frameinfo, sympify, to_tuple, tuple_ish, forma
 import mechanics.space as space
 from sympy.matrices.repmatrix import index_
 from .fortran import FortranPrinter
-from .runner import ErrorReceiver, SolverRunner
+from .runner import SolverRunner
+from .element import SolverElement, SolverContext
+from .block import SolverBlock
 
-class DependencyError(ValueError):
-    pass
-
-class SolverElement(ErrorReceiver):
-    _root: 'SolverBuilder'
-
-    _key_counter: int = 0
-
-    def __init__(self, parent: Optional['SolverElement'] = None) -> None:
-        super().__init__(parent)
-        if parent is None:
-            self._root = cast('SolverBuilder', self)
-        else:
-            self._root = parent._root
-
-    def _generate(self, printer: FortranPrinter) -> str:
-        return ''
-
-
-class SolverBlock(SolverElement):
-    _elements: list[SolverElement]
-
-    def __init__(self, parent: Optional['SolverElement'] = None) -> None:
-        super().__init__(parent)
-        self._elements = []
-
-    def explicit(self, equations: ExplicitEquations) -> Self:
-        element = ExplicitElement(self._root, equations)
-        self._elements.append(element)
-        return self
-
-    def calculate(self, functions: dict[str, Expr], *indices: Index) -> Self:
-        element = CalculationElement(self._root, functions, *indices)
-        self._elements.append(element)
-        return self
-
-    # @contextmanager
-    # def implicit(self, equations: ImplicitEquations, unknowns: tuple_or_list[Variable],
-    #              indices: tuple_or_list[tuple[Index, Expr, Expr]] = []):
-    #     block = ImplicitBlock(self._root, equations, tuple(unknowns), list(indices))
-    #     yield block
-    #     self._elements.append(block)
-
-    @contextmanager
-    def steps(self, index: Index, start: Expr | int, end: Expr | int):
-        block = StepsBlock(self._root, index, sympify(start), sympify(end))
-        yield block
-        self._elements.append(block)
-
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        pass
-
-    def _generate(self, printer: FortranPrinter) -> str:
-        code = ''
-        for element in self._elements:
-            code += element._generate(printer)
-            code += '\n'
-        return code
-
-
-class ExplicitElement(SolverElement):
-    _equations: ExplicitEquations
-
-    _frame_info: inspect.FrameInfo
-
-    def __init__(self, parent: 'SolverElement', equations: ExplicitEquations) -> None:
-        super().__init__(parent)
-        self._equations = equations
-
-        self._frame_info = inspect.stack()[2]
-
-        for l, r in equations.items():
-            if not isinstance(l, Variable):
-                raise TypeError(f'Left-hand side of explicit equation must be a Variable, got {type(l)}: {l} = {r}.')
-
-            for var in r.atoms(Variable):
-                if var.general_form() not in self._root._constants and \
-                   var.general_form() not in self._root._variables:
-                    raise ValueError(f'Variable {var} used before definition in explicit equation: {l} = {r}.')
-
-    @staticmethod
-    def _dependency_error(frame_info, var, l, r):
-        raise DependencyError(
-            f'Variable {var} used before calculation in explicit equation: {l} = {r}\n'
-            'at ' + format_frameinfo(frame_info)
-        )
-
-    @staticmethod
-    def _bound_error(frame_info, var, l, r):
-        raise IndexError(
-            f'Variable {var} out of bounds in explicit equation: {l} = {r}\n'
-            'at ' + format_frameinfo(frame_info)
-        )
-
-    @staticmethod
-    def _nan_error(frame_info, l, r):
-        # raise ValueError(
-        #     f'Calculation result is NaN in explicit equation: {l} = {r}\n'
-        #     'at ' + format_frameinfo(frame_info)
-        # )
-        print(f'Warning: Calculation result is NaN in explicit equation: {l} = {r}.')
-
-    def _generate(self, printer: FortranPrinter) -> str:
-        p = printer.doprint
-
-        code = '''
-        ! Solve explicit equations
-        '''
-
-        checked_dependencies = set()
-
-        for l, r in self._equations.items():
-            checks = []
-            for var in r.atoms(Variable):
-                if var in self._root._constants: continue
-                if var in checked_dependencies: continue
-
-                checks.append(var)
-                checked_dependencies.add(var)
-
-                bound_condition = self._root._bound_condition_of(var)
-                if bound_condition == sp.S.true:
-                    pass
-                elif bound_condition == sp.S.false:
-                    raise IndexError(f'Variable {var} out of bounds in explicit equation: {l} = {r}')
-                else:
-                    bound_error_key = self.register_error(self._bound_error, self._frame_info, var, l, r)
-
-                if self._root.check_options.get('bounds', True):
-                    code += f'''
-        if ({p(sp.Not(bound_condition))}) then; error = {bound_error_key}; goto 999; end if'''
-                
-                if self._root.check_options.get('dependencies', True):
-                    dependency_error_key = self.register_error(self._dependency_error, self._frame_info, var, l, r)
-                    code += f'''
-        if (ieee_is_nan({p(var)})) then; error = {dependency_error_key}; goto 999; end if
-        '''
-
-
-            code += f'''
-        {p(l)} = {p(r)}'''
-
-            if self._root.check_options.get('nan', True):
-                nan_error_key = self.register_error(self._nan_error, self._frame_info, l, r)
-                code += f'''
-        if (ieee_is_nan({p(l)})) then; error = {nan_error_key}; goto 999; end if
-        '''
-
-        return textwrap.dedent(code)
-
-
-class CalculationElement(SolverBlock):
-    _functions: dict[str, Expr]
-    _indices: tuple[Index, ...]
-
-    def __init__(self, root: 'SolverBuilder', functions: dict[str, Expr], *indices: Index) -> None:
-        super().__init__(root)
-        self._functions = functions
-        self._indices = indices
-
-    def _generate(self, printer: FortranPrinter) -> str:
-        p = printer.doprint
-
-        indices = ",".join([str(p(i)) for i in self._indices])
-
-        code = '! Calculate functions\n'
-        for name, f in self._functions.items():
-            name = printer.fortran_name(name)
-            if indices:
-                code += f'{name}({indices}) = {p(f)}\n'
-            else:
-                code += f'{name} = {p(f)}\n'
-
-        return code
-
-
-class StepsBlock(SolverBlock):
-    index: Index
-    start: Expr | int
-    end: Expr | int
-
-    def __init__(self, root: 'SolverBuilder', index: Index, start: Expr, end: Expr) -> None:
-        super().__init__(root)
-        self.index = index
-        self.start = start
-        self.end = end
-
-        root._register_indices(index)
-
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        pass
-
-    def _generate(self, printer: FortranPrinter) -> str:
-        p = printer.doprint
-
-        code = f'''
-            ! Iterate over {p(self.index)}
-            do {p(self.index)} = {p(self.start)}, {p(self.end)}'''
-
-        for element in self._elements:
-            code += '\n'
-            code += textwrap.indent(element._generate(printer), '    ' * 4)
-
-        code += f'''
-            end do
-        '''
-
-        return textwrap.dedent(code)
 
 class SolverBuilder(SolverBlock):
-    _indices: set[Index]
-    _variables: dict[Variable, tuple[IndexRange, ...]]
-    _functions: dict[str, tuple[IndexRange, ...]]
-    _constants: list[Variable]
     _inputs: list[Variable]
 
-    _newton_sizes: list[Expr]
-
-    check_options: dict[str, bool]
-
     def __init__(self, check_options: dict[str, bool] = {}) -> None:
-        super().__init__()
+        super().__init__(SolverContext(self, check_options=check_options), root=True)
 
-        self._indices = set()
-        self._variables = {}
-        self._functions = {}
-        self._constants = []
         self._inputs = []
-
-        self._newton_sizes = []
-
-        self.check_options = check_options
 
         SolverBlock._key_counter = 0
 
@@ -256,7 +28,7 @@ class SolverBuilder(SolverBlock):
                   index: Optional[tuple[Index, Expr | int, Expr | int]] = None,
                   indices: list[tuple[Index, Expr | int, Expr | int]] = []) -> Self:
         self.variables(*constants, index=index, indices=indices)
-        self._constants.extend(constants)
+        self._context.constants.extend(constants)
         return self
 
     def variables(self, *variables: Variable, 
@@ -283,7 +55,7 @@ class SolverBuilder(SolverBlock):
                 if unknowns:
                     raise ValueError(f'Index specification {range} contains unknown constants: {unknowns}. '
                                       'Add them using .constants() first.')
-            self._variables[var] = index_ranges
+            self._context.variables[var] = index_ranges
 
         return self
 
@@ -301,7 +73,7 @@ class SolverBuilder(SolverBlock):
                 raise TypeError(f"Expected Index, got {range.index} which has type {type(range.index)})")
         
         for name in names:
-            self._functions[name] = index_ranges
+            self._context.functions[name] = index_ranges
 
         return self
 
@@ -315,75 +87,18 @@ class SolverBuilder(SolverBlock):
         code = self._generate(printer)
         return SolverRunner(
             code, self,
-            constants = {c: self._ranges_of(c) for c in self._constants},
-            variables = {v: self._ranges_of(v) for v in self._variables},
-            inputs = {v: self._ranges_of(v) for v in self._inputs},
-            functions = {name: self._ranges_of(name) for name in self._functions}
+            constants = {c: self._context.ranges_of(c) for c in self._context.constants},
+            variables = {v: self._context.ranges_of(v) for v in self._context.variables},
+            inputs = {v: self._context.ranges_of(v) for v in self._inputs},
+            functions = {name: self._context.ranges_of(name) for name in self._context.functions}
         )
-
-    def _register_indices(self, *index: Index):
-        self._indices.update(index)
-
-    def _require_newton_size(self, size: Expr):
-        self._newton_sizes.append(size)
-
-    def _ranges_of(self, var: Variable | str) -> tuple[IndexRange, ...]:
-        if isinstance(var, str):
-            var_ranges = self._functions.get(var, None)
-            if var_ranges is None:
-                raise ValueError(f'Function {var} not defined in solver.')
-            indices = {range.index: range.index for range in var_ranges}
-        else:
-            var_ranges = self._variables.get(var.general_form(), None)
-            if var_ranges is None:
-                raise ValueError(f'Variable {var} not defined in solver.')
-            indices = var.index_subs
-        
-        ranges = []
-        for range in var_ranges:
-            if indices[range.index] == range.index:
-                ranges.append(range)
-        return tuple(ranges)
-
-    def _shape_of(self, var: Variable | str, subs: Any = {}) -> tuple[Expr, ...]:
-        shape = []
-        for range in self._ranges_of(var):
-            shape.append(sp.sympify(range.end - range.start + 1).subs(subs))
-        return tuple(shape)
-
-    def _size_of(self, var: Variable) -> Expr:
-        size = sp.S.One
-        for n in self._shape_of(var):
-            size *= n
-        return size
-
-    def _shape_in_context_of(self, var: Variable, indices: list[tuple[Index, Expr, Expr]]) -> tuple[Expr, ...]:
-        index_dict = {i: (start, end) for i, start, end in indices}
-        shape = []
-        for i, i_value in var.index_subs.items():
-            if i == i_value:
-                if i in index_dict:
-                    start, end = index_dict[i]
-                    shape.append(sp.sympify(end - start + 1))
-                else:                   
-                    raise ValueError(f'Index {i} not defined in context for variable {var}.')
-            else:
-                shape.append(sp.S.One)
-        return tuple(shape)
-
-    def _bound_condition_of(self, var: Variable) -> Expr:
-        ranges = self._ranges_of(var)
-        condition = sp.S.true
-        for range in ranges:
-            condition = condition & ((range.start <= range.index) & (range.index <= range.end))
-        return condition
 
     def _unknowns_of(self, exprs: tuple_ish[Expr]) -> set[Variable]:
         unknowns = set()
         for expr in to_tuple(exprs):
             vars = sp.sympify(expr).atoms(Variable)
             for v in vars:
-                if v not in self._constants and v not in self._inputs:
+                if v not in self._context.constants and v not in self._inputs:
                     unknowns.add(v)
         return unknowns
 
@@ -409,7 +124,7 @@ class SolverBuilder(SolverBlock):
 
             ! Define constants and variables'''
 
-        for var in self._variables:
+        for var in self._context.variables:
             type_ = 'integer' if var.space == space.Z else 'real(8)'
             if var.indices:
                 code += f'''
@@ -422,7 +137,7 @@ class SolverBuilder(SolverBlock):
 
             ! Define functions'''
 
-        for name, indices in self._functions.items():
+        for name, indices in self._context.functions.items():
             if indices:
                 code += f'''
             real(8), allocatable :: {printer.fortran_name(name)}({", ".join([":" for _ in indices])})'''
@@ -433,7 +148,7 @@ class SolverBuilder(SolverBlock):
         code += '''
 
             ! Define indices'''
-        for index in self._indices:
+        for index in self._context.indices:
             code += f'''
             integer :: {p(index)}'''
 
@@ -447,7 +162,6 @@ class SolverBuilder(SolverBlock):
             real(8), allocatable :: newton_jac(:,:)
             integer, allocatable :: newton_ipiv(:)
             integer :: newton_info
-            integer :: newton_n
 
             ! Initialize variables
             input_n = 1
@@ -455,10 +169,10 @@ class SolverBuilder(SolverBlock):
         
         initialized = set()
 
-        for v in self._constants + self._inputs:
+        for v in self._context.constants + self._inputs:
             var = v.general_form()
-            ranges = self._variables.get(var, ())
-            if var in self._variables and ranges and var not in initialized:
+            ranges = self._context.variables.get(var, ())
+            if var in self._context.variables and ranges and var not in initialized:
                 initialized.add(var)
                 name = printer.fortran_name(var.name)
                 ranges_str = ",".join(f"{p(r.start)}:{p(r.end)}" for r in ranges)
@@ -467,8 +181,8 @@ class SolverBuilder(SolverBlock):
             {name} = ieee_value({name}, ieee_quiet_nan)'''
 
             name = printer.fortran_name(v.name)
-            size = self._size_of(v)
-            shape = self._shape_of(v)
+            size = self._context.size_of(v)
+            shape = self._context.shape_of(v)
             assign_to = printer.print_as_array_arg(v) if var != v else name
 
             if v.space == space.Z:
@@ -516,7 +230,7 @@ class SolverBuilder(SolverBlock):
             ! Allocate for rest of variables
             '''
 
-        for v, ranges in self._variables.items():
+        for v, ranges in self._context.variables.items():
             if v in initialized:
                 continue
             if ranges:
@@ -532,7 +246,7 @@ class SolverBuilder(SolverBlock):
 
             ! Allocate for functions'''
             
-        for name, ranges in self._functions.items():
+        for name, ranges in self._context.functions.items():
             if ranges:
                 f_name = printer.fortran_name(name)
                 ranges_str = ",".join(f"{p(r.start)}:{p(r.end)}" for r in ranges)
@@ -545,7 +259,7 @@ class SolverBuilder(SolverBlock):
 
             ! Allocate for Newton solver
             newton_size = 0'''  
-        for size in self._newton_sizes:
+        for size in self._context.newton_sizes:
             code += f'''
             newton_size = max(newton_size, {p(size)})'''
 
@@ -575,7 +289,7 @@ class SolverBuilder(SolverBlock):
 
             ! Write variables to log
         '''
-        for v in self._variables:
+        for v in self._context.variables:
             if v.indices:
                 if v.space == space.Z:
                     code += f'''
@@ -594,7 +308,7 @@ class SolverBuilder(SolverBlock):
         code += f'''
             ! Write functions to log
         '''
-        for name in self._functions:
+        for name in self._context.functions:
             code += f'''
             write(log_unit) {printer.fortran_name(name)}'''
 

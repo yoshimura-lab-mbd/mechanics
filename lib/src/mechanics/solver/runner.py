@@ -175,7 +175,7 @@ class SolverRunner:
             else:
                 raise ValueError(f'Condition for variable {c} is not provided as constant or input.')
 
-        print(condition_values)
+        # print(condition_values)
 
         condition_raw = []
         for c in self._constants.keys():
