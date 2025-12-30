@@ -6,7 +6,7 @@ import inspect
 
 from mechanics.util import format_frameinfo, sympify
 from mechanics.symbol import Variable, Index, ExplicitEquations, Expr
-from .element import SolverElement, SolverContext
+from .element import SolverElement, SolverContext, template_env
 from .fortran import FortranPrinter
 from .root_finder import NewtonRootFinder
 
@@ -102,50 +102,54 @@ class ExplicitElement(SolverElement):
     def _generate(self, printer: FortranPrinter) -> str:
         p = printer.doprint
 
-        code = '''
-        ! Solve explicit equations
-        '''
+        template = template_env.get_template("block/explicit_element.f90")
 
+        checked_bounds = set()
         checked_dependencies = set()
 
+        equations = []
+
         for l, r in self._equations.items():
-            checks = []
+            bound_checks = {}
+            dependency_checks = {}
+
             for var in r.atoms(Variable):
                 if var in self._context.constants: continue
-                if var in checked_dependencies: continue
-
-                checks.append(var)
-                checked_dependencies.add(var)
-
-                bound_condition = self._context.bound_condition_of(var)
-                if bound_condition == sp.S.true:
-                    pass
-                elif bound_condition == sp.S.false:
-                    raise IndexError(f'Variable {var} out of bounds in explicit equation: {l} = {r}')
-                else:
-                    bound_error_key = self.register_error(self._bound_error, self._frame_info, var, l, r)
 
                 if self._context.check_options.get('bounds', True):
-                    code += f'''
-        if ({p(sp.Not(bound_condition))}) then; error = {bound_error_key}; goto 999; end if'''
-                
+                    bound_condition = self._context.bound_condition_of(var)
+                    if bound_condition == sp.S.true:
+                        pass
+                    elif bound_condition == sp.S.false:
+                        raise IndexError(f'Variable {var} out of bounds in explicit equation: {l} = {r}')
+                    elif bound_condition not in checked_bounds:
+                        bound_error_key = self.register_error(self._bound_error, self._frame_info, var, l, r)
+                        bound_checks[p(bound_condition)] = bound_error_key
+                        checked_bounds.add(bound_condition)
+
                 if self._context.check_options.get('dependencies', True):
-                    dependency_error_key = self.register_error(self._dependency_error, self._frame_info, var, l, r)
-                    code += f'''
-        if (ieee_is_nan({p(var)})) then; error = {dependency_error_key}; goto 999; end if
-        '''
-
-
-            code += f'''
-        {p(l)} = {p(r)}'''
+                    if var not in checked_dependencies:
+                        dependency_error_key = self.register_error(self._dependency_error, self._frame_info, var, l, r)
+                        dependency_checks[p(var)] = dependency_error_key
+                        checked_dependencies.add(var)
 
             if self._context.check_options.get('nan', True):
                 nan_error_key = self.register_error(self._nan_error, self._frame_info, l, r)
-                code += f'''
-        if (ieee_is_nan({p(l)})) then; error = {nan_error_key}; goto 999; end if
-        '''
+            else:
+                nan_error_key = None
 
-        return textwrap.dedent(code)
+            checked_dependencies.add(l)
+
+            equations.append({
+                'l': p(l),
+                'r': p(r),
+                'bound_checks': bound_checks,
+                'dependency_checks': dependency_checks,
+                'nan_check': nan_error_key
+            })
+
+        return template.render(equations=equations)
+
 
 
 class CalculationElement(SolverBlock):

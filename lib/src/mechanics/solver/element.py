@@ -1,11 +1,15 @@
 from typing import Any
 import sympy as sp
+from jinja2 import Environment, PackageLoader
 
 from mechanics.util import tuple_ish, to_tuple
 from mechanics.symbol import Variable, Index, Expr, IndexRange
 from .runner import ErrorReceiver
 from .fortran import FortranPrinter
 
+template_env = Environment(
+    loader=PackageLoader('mechanics', 'templates')
+)
 
 class SolverContext:
     error_receiver: ErrorReceiver
