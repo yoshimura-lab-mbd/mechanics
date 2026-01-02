@@ -69,3 +69,7 @@ class Compose(Conversion):
         for conv in reversed(self._conversions):
             result = conv(result)
         return result
+
+
+def replacement(replacements: dict[Expr, Expr] | list[tuple[Expr, Expr]]) -> Replacement:
+    return Replacement(replacements)

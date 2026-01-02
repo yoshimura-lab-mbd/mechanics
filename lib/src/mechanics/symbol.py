@@ -1,4 +1,4 @@
-from typing import Optional, cast, Any, Union
+from typing import Optional, cast, Any, Union, overload
 import sympy as sp
 import sympy.core.function as spf
 import sympy.core.relational as spr
@@ -249,7 +249,20 @@ def to_implicit(F: ExplicitEquations) -> ImplicitEquations:
     return tuple(a - b for a, b in F.items())
 
 
-def shift_index(expr: Expr, index: Index, shift: int) -> Expr:
+@overload
+def shift_index(expr: Expr, index: Index, shift: int) -> Expr: ...
+@overload
+def shift_index(expr: list[Expr], index: Index, shift: int) -> list[Expr]: ...
+@overload
+def shift_index(expr: tuple[Expr, ...], index: Index, shift: int) -> tuple[Expr, ...]: ...
+
+def shift_index(expr: Any, index: Index, shift: int) -> Expr:
+
+    if isinstance(expr, list):
+        return [shift_index(e, index, shift) for e in expr]
+    elif isinstance(expr, tuple):
+        return tuple(shift_index(e, index, shift) for e in expr)
+
     def replace_variable(var: Variable) -> Variable:
         index_subs = var.index_subs
         for i, value in index_subs.items():

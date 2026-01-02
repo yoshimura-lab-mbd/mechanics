@@ -1,5 +1,4 @@
-from sys import displayhook
-from typing import Optional, cast
+from typing import cast
 
 from mechanics.symbol import ExplicitEquations, ImplicitEquations, Variable, Expr, Index, variables
 from mechanics.differential_equation import to_first_order

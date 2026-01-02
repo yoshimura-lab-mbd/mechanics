@@ -1,8 +1,9 @@
-from typing import cast
+from typing import cast, Optional
 import sympy as sp
+from collections import defaultdict
 
 from mechanics.conversion import Conversion, Replacement
-from .symbol import Expr, Variable, BaseSpace, variables
+from .symbol import Expr, Variable, BaseSpace, variables, shift_index, Index
 from .util import tuple_ish, to_tuple
 
 
@@ -109,5 +110,55 @@ def legendre_transform(L: Expr, q: tuple_ish[Variable], v: tuple_ish[Variable]) 
 
     return dict(zip(p, p_qv)), H, conversion
     
-
     
+def discrete_euler_lagrange_equation(L: Expr, q: tuple_ish[Variable]) -> tuple[Expr, ...]:
+    """
+    Discrete Euler-Lagrange equations for discrete Lagrangian L with respect to generalized coordinates q.
+
+    Parameters
+    ----------
+    L : Expr
+        The discrete Lagrangian. 
+    q : tuple_ish[Variable]
+        The generalized coordinates.
+    Returns
+    -------
+    tuple[Expr, ...]
+        The discrete Euler-Lagrange equations.
+    """
+
+    q = to_tuple(q)
+
+    i: Optional[Index] = None
+
+    for q_n in q:
+        if q_n.base_spaces:
+            raise ValueError('Generalized coordinates q must be fully discrete (no base spaces).')
+        if len(q_n.indices) != 1:
+            raise ValueError('Generalized coordinates q must have exactly one index representing time steps.')
+        if i is None:
+            if not isinstance(q_n.indices[0], Index):
+                raise ValueError('The index of generalized coordinates q must be pure Index.')
+            i = q_n.indices[0]
+        elif i != q_n.indices[0]:
+            raise ValueError('All generalized coordinates q must share the same time index.')
+    
+    i = cast(Index, i)
+
+    appearances: defaultdict[Variable, set[Variable]] = defaultdict(set)
+
+    for v in L.atoms(Variable):
+        if v.general_form() in q:
+            appearances[v.general_form()].add(v)
+
+    equations: list[Expr] = []
+
+    for q_n in q:
+        eq = sp.S.Zero
+        for q_i in appearances[q_n]:
+            shift = int(q_i.indices[0] - i)
+            dLdq = sp.diff(L, q_i)
+            eq += shift_index(dLdq, i, -shift)
+        equations.append(eq)
+
+    return tuple(equations)

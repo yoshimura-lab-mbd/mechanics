@@ -152,7 +152,7 @@ class ExplicitElement(SolverElement):
 
 
 
-class CalculationElement(SolverBlock):
+class CalculationElement(SolverElement):
     _functions: dict[str, Expr]
     _indices: tuple[Index, ...]
 
