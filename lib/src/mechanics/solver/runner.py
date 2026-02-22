@@ -4,6 +4,7 @@ import sys
 import tempfile
 import importlib.util
 import subprocess
+import shutil
 import numpy as np
 import sympy as sp
 
@@ -90,7 +91,14 @@ class SolverRunner:
 
         shell_path = subprocess.check_output(['bash', '-l', '-c', 'echo $PATH']).decode().strip()
         env = os.environ.copy()
-        env["PATH"] += ':' + shell_path
+        python_bin = os.path.dirname(sys.executable)
+        path_entries = [python_bin, env.get("PATH", ""), shell_path]
+        env["PATH"] = ":".join(p for p in path_entries if p)
+        if shutil.which("meson", path=env["PATH"]) is None:
+            raise RuntimeError(
+                "meson command not found. Run with uv environment "
+                "(e.g. `uv sync` then `uv run marimo edit ...`) or install meson."
+            )
         generated_name = 'generated'
         ret = subprocess.run([
             sys.executable, '-m', 'numpy.f2py', '-m', generated_name, 

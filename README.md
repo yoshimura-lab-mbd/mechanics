@@ -32,11 +32,21 @@ uv sync
 
 # 利用
 
-利用例は[example/]()にある．
+利用例は `examples/` にある．
 
-## ipynb ノートブックの実行
+## marimo ノートブックの実行
 
-VSCodeの場合，Jupyter拡張機能をインストールした上で，ipynbファイルの実行ボタンを押す．初回実行時にはkernelを選択するようメッセージが出るので，`mechanics ... (.venv/bin/python)`を選択する．
+依存を同期した後，次で marimo を起動できる．
+```
+uv sync
+uv run marimo edit examples/double_pendulum.py
+```
+
+ブラウザが開いたら，`Run all` で実行する．
+
+## 既存の ipynb ノートブック
+
+これまでの `ipynb` も残してあるので，必要な場合は VSCode + Jupyter 拡張機能で実行できる．
 
 ## ドキュメント
 
