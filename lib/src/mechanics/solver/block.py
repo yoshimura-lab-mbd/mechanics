@@ -1,4 +1,4 @@
-from typing import Self
+from typing import Self, Any, Mapping
 from contextlib import contextmanager
 import sympy as sp
 import textwrap
@@ -27,7 +27,7 @@ class SolverBlock(SolverElement):
         self._elements.append(element)
         return self
 
-    def calculate(self, functions: dict[str, Expr], *indices: Index) -> Self:
+    def calculate(self, functions: dict[str, Expr] | Any, *indices: Index) -> Self:
         element = CalculationElement(self._context, functions, *indices)
         self._elements.append(element)
         return self
@@ -156,10 +156,31 @@ class CalculationElement(SolverElement):
     _functions: dict[str, Expr]
     _indices: tuple[Index, ...]
 
-    def __init__(self, context: SolverContext, functions: dict[str, Expr], *indices: Index) -> None:
+    def __init__(self, context: SolverContext, functions: dict[str, Expr] | Any, *indices: Index) -> None:
         super().__init__(context)
-        self._functions = functions
+        self._functions = self._normalize_functions(functions)
         self._indices = indices
+
+    @staticmethod
+    def _is_namedtuple_instance(value: Any) -> bool:
+        return isinstance(value, tuple) and hasattr(value, "_fields") and hasattr(value, "_asdict")
+
+    @classmethod
+    def _normalize_functions(cls, functions: dict[str, Expr] | Any) -> dict[str, Expr]:
+        if cls._is_namedtuple_instance(functions):
+            functions = functions._asdict()
+        if isinstance(functions, Mapping):
+            normalized: dict[str, Expr] = {}
+            for name, expr in functions.items():
+                if not isinstance(name, str):
+                    raise TypeError(
+                        f"Function names passed to calculate() must be str, got {type(name)}: {name}"
+                    )
+                normalized[name] = expr
+            return normalized
+        raise TypeError(
+            f"functions passed to calculate() must be a mapping or namedtuple, got {type(functions)}"
+        )
 
     def _generate(self, printer: FortranPrinter) -> str:
         p = printer.doprint

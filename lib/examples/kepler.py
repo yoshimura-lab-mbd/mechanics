@@ -1,0 +1,216 @@
+import marimo
+
+__generated_with = "0.19.11"
+app = marimo.App(width="medium")
+
+
+@app.cell
+def imports():
+    import marimo as mo
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from sympy import cos, sin, solve
+
+    import mechanics.space as space
+    from mechanics import Markdown, diff, base_space, constants, group, index, variable, variables
+    from mechanics.differential_equation import to_first_order
+    from mechanics.integrator.runge_kutta import rk4_explicit
+    from mechanics.lagrange import euler_lagrange_equation
+    from mechanics.solver import build_solver
+
+    return (
+        Markdown,
+        base_space,
+        build_solver,
+        constants,
+        cos,
+        diff,
+        euler_lagrange_equation,
+        group,
+        index,
+        mo,
+        np,
+        plt,
+        rk4_explicit,
+        sin,
+        solve,
+        space,
+        to_first_order,
+        variable,
+    )
+
+
+@app.cell
+def intro(mo):
+    mo.md("""
+    # Kepler problem
+    """)
+    return
+
+
+@app.cell
+def derive_lagrangian(
+    base_space,
+    constants,
+    cos,
+    diff,
+    group,
+    sin,
+    space,
+    variable,
+):
+    t = base_space("t")
+
+    q = group(
+        variable("r", t),
+        variable(r"\theta", t, space=space.S)
+    )
+
+    c = constants(r"\mu m")
+
+    f = group(
+        x = q.r * cos(q.theta),
+        y = q.r * sin(q.theta),
+        U = -c.mu / q.r,
+        K = lambda f: (c.m / 2 * (diff(f.x, t) ** 2 + diff(f.y, t) ** 2)).simplify(),
+        E = lambda f: f.K + f.U
+    )
+    L = f.K - f.U
+    return L, c, f, q, t
+
+
+@app.cell
+def derive_equations(L, diff, euler_lagrange_equation, q, solve, t):
+    EL = euler_lagrange_equation(L, q)
+    F = solve(EL, diff(q, t, 2))
+    return EL, F
+
+
+@app.cell(hide_code=True)
+def show_symbolic_results(EL, F, L, Markdown, mo):
+    md = Markdown()
+    md.add_markdown("### Lagrangian")
+    md.show("L = ", L)
+    md.add_markdown("### Euler-Lagrange equations")
+    md.show_equations(EL)
+    md.add_markdown("### Solved accelerations")
+    md.show_equations(F)
+    md.render(mo)
+    return
+
+
+@app.cell
+def build_step_equations(F, constants, index, q, rk4_explicit, to_first_order):
+    ht = constants("h T")
+    h = ht.h
+    T = ht.T
+    i = index("i")
+
+    first_order = to_first_order(F)
+    rk4 = rk4_explicit(first_order.equations, h, i)
+    X = rk4.states
+    K = rk4.stages
+    step_eq = rk4.step_equations
+    d = rk4.conversion * first_order.conversion
+
+    q_ = d(q)
+    v_ = d(first_order.variables_of_order(1))
+    return K, T, X, d, h, i, q_, step_eq, v_
+
+
+@app.cell
+def build_solver_module(K, T, X, build_solver, c, d, f, h, i, step_eq):
+    solver = build_solver()
+    solver.constants(*c)
+    solver.constants(h, T)
+    solver.variables(*X, *K, index=(i, 0, T / h))
+    solver.functions(*f._fields, index=(i, 0, T / h))
+    solver.inputs(*(x_[0] for x_ in X))
+    with solver.steps(i, 0, T / h) as step:
+        step.explicit(step_eq)
+        step.calculate(d(f), i)
+    solver = solver.generate()
+    return (solver,)
+
+
+@app.cell
+def controls(mo):
+    sliders = mo.ui.dictionary(
+        {
+            "mu": mo.ui.slider(start=0.1, stop=10.0, step=0.1, value=1.0, label=r"$\mu$"),
+            "m": mo.ui.slider(start=0.1, stop=10.0, step=0.1, value=1.0, label=r"$m$"),
+            "r_0": mo.ui.slider(start=0.1, stop=5.0, step=0.1, value=1.0, label=r"$r(0)$"),
+            "theta_0": mo.ui.slider(start=-3.14, stop=3.14, step=0.01, value=0.0, label=r"$\theta(0)$"),
+            "v_r_0": mo.ui.slider(start=-5.0, stop=5.0, step=0.1, value=0.0, label=r"$\dot{r}(0)$"),
+            "v_theta_0": mo.ui.slider(start=0.1, stop=5.0, step=0.1, value=1.1, label=r"$\dot{\theta}(0)$"),
+            "h": mo.ui.slider(start=0.001, stop=0.1, step=0.001, value=0.01, label=r"$h$"),
+            "T": mo.ui.slider(start=1.0, stop=200.0, step=1.0, value=50.0, label=r"$T$"),
+        }
+    )
+    sliders
+    return (sliders,)
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+ 
+    """)
+    return
+
+
+@app.cell
+def run_simulation(T, c, h, np, q_, sliders, solver, v_):
+    sv = sliders.value
+    result = solver.run(
+        {
+            c.mu: sv["mu"],
+            c.m: sv["m"],
+            q_.r[0]: sv["r_0"],
+            q_.theta[0]: sv["theta_0"],
+            v_.r[0]: sv["v_r_0"],
+            v_.theta[0]: sv["v_theta_0"],
+            h: sv["h"],
+            T: sv["T"],
+        }
+    )
+    t_ = np.arange(0, result[T], result[h])
+    return result, t_
+
+
+@app.cell
+def plot_trajectory(plt, result):
+    plt.rcParams["font.family"] = "Times New Roman"
+    plt.rcParams["mathtext.fontset"] = "cm"
+
+    _fig, _ax = plt.subplots(1, 1, figsize=(4, 4), tight_layout=True)
+    _ax.plot(result["x"], result["y"])
+    _ax.set_xlabel("$x$")
+    _ax.set_ylabel("$y$")
+    _ax.set_aspect("equal")
+    _fig
+    return
+
+
+@app.cell
+def plot_timeseries(plt, q_, result, t_, v_):
+    _fig2, axes = plt.subplots(3, 2, figsize=(8, 8), tight_layout=True)
+
+    series = [
+        (r"r", q_.r),
+        (r"\theta", q_.theta),
+        (r"\dot{r}", v_.r),
+        (r"\dot{\theta}", v_.theta),
+        ("E", "E"),
+    ]
+    for ax, (name, var) in zip(axes.flatten(), series):
+        ax.plot(t_, result[var][:-1])
+        ax.set_xlabel("$t$")
+        ax.set_ylabel(f"${name}$")
+        ax.set_xlim(0, t_[-1] if len(t_) else 0)
+    _fig2
+    return
+
+
+if __name__ == "__main__":
+    app.run()

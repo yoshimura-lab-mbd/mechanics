@@ -9,6 +9,7 @@ from sympy.utilities.iterables import NotIterable
 
 from mechanics.util import to_tuple, tuple_ish, single_or_tuple, split_latex
 from mechanics.space import Space, Z, R
+from mechanics.group import group_from_named
 
 Expr = sp.Expr
 Basic = sp.Basic
@@ -40,6 +41,17 @@ class IndexRange:
 
     def __str__(self) -> str:
         return f'{self.index} in [{self.start}, {self.end}]'
+
+    def __repr__(self) -> str:
+        return f'IndexRange({self.index}, {self.start}, {self.end})'
+
+    def _latex(self) -> str:
+        if self.start == self.end:
+            return f'{self.index}={sp.latex(self.start)}'
+        else:
+            return f'{self.start} \\leq {sp.latex(self.index)} \\leq {self.end}'
+
+IndexRanges = tuple[IndexRange, ...]
 
 class Variable(spf.AppliedUndef, NotIterable):
     name: str
@@ -216,33 +228,62 @@ class Variable(spf.AppliedUndef, NotIterable):
 
 
 
-ExplicitEquations = dict[Variable, Expr]
+ExplicitEquations = dict[Expr, Expr]
 ImplicitEquations = tuple[Expr, ...]
 
-    
-def base_spaces(name: str) -> tuple[BaseSpace, ...]:
-    names = split_latex(name)
-    return tuple(BaseSpace(n) for n in names)
 
-def indices(name: str) -> tuple[Index, ...]:
+def base_space(name: str) -> BaseSpace:
+    return BaseSpace(name)
+
+
+def base_spaces(name: str) -> Any:
     names = split_latex(name)
-    return tuple(Index(n) for n in names)
+    return group_from_named(tuple(BaseSpace(n) for n in names), typename="SymbolGroup")
+
+
+def index(name: str) -> Index:
+    return Index(name)
+
+
+def indices(name: str) -> Any:
+    names = split_latex(name)
+    return group_from_named(tuple(Index(n) for n in names), typename="SymbolGroup")
+
+
+def variable(name: str,
+             *args: Index | BaseSpace,
+             space: Space = R,
+             **options) -> Variable:
+    return Variable.make(name, *args, space=space, **options)
+
 
 def variables(name: str,
-              *args: Index | BaseSpace, 
+              *args: Index | BaseSpace,
               space: Space = R,
-              **options) -> tuple[Variable, ...]:
+              **options) -> Any:
     names = split_latex(name)
-    return tuple(Variable.make(name, *args, space=space, **options)
-                 for name in names)
+    return group_from_named(
+        tuple(Variable.make(n, *args, space=space, **options) for n in names),
+        typename="SymbolGroup",
+    )
+
+
+def constant(name: str,
+             *indices: Index,
+             space: Space = R,
+             **options) -> Variable:
+    return Variable.make(name, *indices, space=space, **options)
+
 
 def constants(name: str,
               *indices: Index,
               space: Space = R,
-              **options) -> tuple[Variable, ...]:
+              **options) -> Any:
     names = split_latex(name)
-    return tuple(Variable.make(name, *indices, space=space, **options)
-                 for name in names)
+    return group_from_named(
+        tuple(Variable.make(n, *indices, space=space, **options) for n in names),
+        typename="SymbolGroup",
+    )
 
 
 def to_implicit(F: ExplicitEquations) -> ImplicitEquations:
