@@ -1,15 +1,20 @@
 from typing import cast
 
-from mechanics.symbol import ExplicitEquations, ImplicitEquations, Variable, Expr, Index, variables
-from mechanics.differential_equation import to_first_order
+from mechanics.symbol import ExplicitEquations, ImplicitEquations, Variable, Expr, Index, variable
+from mechanics.differential_equation import is_first_order
 from mechanics.discretization import discretization
-from mechanics.conversion import Conversion
+from mechanics.integrator.result import (
+    BackwardEulerExplicitResult,
+    EulerExplicitResult,
+    ModifiedEulerExplicitResult,
+)
 
 # input: \dot{X} = F(X)
 # output: X_{i+1} = X_i + dt * F(X_i)
 def euler_explicit(F: ExplicitEquations, dt: Expr, i: Index) \
-    -> tuple[tuple[Variable, ...], ExplicitEquations, Conversion]:
-    F, r = to_first_order(F)
+    -> EulerExplicitResult:
+    if not is_first_order(F):
+        raise ValueError("euler_explicit requires first-order equations. Use to_first_order() to convert.")
 
     t = list(F.keys())[0].args[1][0]  # type: ignore
     d = discretization().space(t, i, dt)
@@ -21,15 +26,16 @@ def euler_explicit(F: ExplicitEquations, dt: Expr, i: Index) \
         X.add(x_.general_form())
         step[x_.subs(i, i + 1)] = x_ + dt * d(fX)
 
-    return tuple(X), step, d * r
+    return EulerExplicitResult(states=tuple(X), step_equations=step, conversion=d)
 
 # input: \dot{X} = F(X)
 # output: K = dt * F(X)
 #         X_{i+1} = X_i + 1/2 * (K + dt * F(X_i + K))
 def modified_euler_explicit(F: ExplicitEquations, dt: Expr, i: Index) \
-    -> tuple[tuple[Variable, ...], tuple[Variable],  ExplicitEquations, Conversion]:
-    F, r = to_first_order(F)
-    
+    -> ModifiedEulerExplicitResult:
+    if not is_first_order(F):
+        raise ValueError("modified_euler_explicit requires first-order equations. Use to_first_order() to convert.")
+
     t = list(F.keys())[0].args[1][0]  # type: ignore
     d = discretization().space(t, i, dt)
 
@@ -42,18 +48,23 @@ def modified_euler_explicit(F: ExplicitEquations, dt: Expr, i: Index) \
         X.append(x_)
         f_ = d(fX)
         F_[x_] = f_
-        k, = variables(f'k_{{{x_.name}}}', *x_.index_subs.keys())
+        k = variable(f'k_{{{x_.name}}}', *x_.index_subs.keys())
         K[x_] = k
 
     for x_, k in K.items():
         step[k] = dt * F_[x_]
 
     K_subs = {x_: x_ + k for x_, k in K.items()}
-    
+
     for x_ in X:
         step[x_.subs(i, i + 1)] = x_ + (K[x_] + dt * F_[x_].subs(K_subs)) / 2
 
-    return tuple(X), tuple(K.values()), step, d * r
+    return ModifiedEulerExplicitResult(
+        states=tuple(X),
+        stages=tuple(K.values()),
+        step_equations=step,
+        conversion=d,
+    )
 
 heun_explicit = modified_euler_explicit
 
@@ -61,9 +72,9 @@ heun_explicit = modified_euler_explicit
 # input: \dot{X} = F(X)
 # output: X_{i+1} = dt * F(X_{i+1})
 def backward_euler_explicit(F: ExplicitEquations, dt: Expr, i: Index) \
-    -> tuple[tuple[Variable, ...], tuple[Variable, ...], ImplicitEquations, Conversion]:
-
-    F, r = to_first_order(F)
+    -> BackwardEulerExplicitResult:
+    if not is_first_order(F):
+        raise ValueError("backward_euler_explicit requires first-order equations. Use to_first_order() to convert.")
 
     t = list(F.keys())[0].args[1][0]  # type: ignore
     d = discretization().space(t, i, dt)
@@ -77,4 +88,9 @@ def backward_euler_explicit(F: ExplicitEquations, dt: Expr, i: Index) \
         step.append(x_.subs(i, i + 1) - x_ - dt * d(fX).subs(i, i + 1))
         unknowns.append(x_.subs(i, i + 1))
 
-    return tuple(X), tuple(unknowns), tuple(step), d * r
+    return BackwardEulerExplicitResult(
+        states=tuple(X),
+        unknowns=tuple(unknowns),
+        step_equations=tuple(step),
+        conversion=d,
+    )

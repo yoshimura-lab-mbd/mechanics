@@ -13,6 +13,7 @@ def imports():
 
     import mechanics.space as space
     from mechanics import Markdown, base_space, constants, index, variables
+    from mechanics.differential_equation import to_first_order
     from mechanics.integrator.runge_kutta import rk4_explicit
     from mechanics.lagrange import euler_lagrange_equation
     from mechanics.solver import build_solver
@@ -33,6 +34,7 @@ def imports():
         sin,
         solve,
         space,
+        to_first_order,
         variables,
     )
 
@@ -73,7 +75,7 @@ def derive_lagrangian(base_space, constants, cos, diff, sin, space, variables):
     ).simplify()
     E = kinetic + U
     L = kinetic - U
-    return E, L, c, ddq, dq, q, x1, x2, y1, y2
+    return E, L, c, ddq, q, x1, x2, y1, y2
 
 
 @app.cell
@@ -97,21 +99,21 @@ def show_symbolic_results(EL, F, L, Markdown, mo):
 
 
 @app.cell
-def build_step_equations(F, constants, dq, index, q, rk4_explicit):
+def build_step_equations(F, constants, index, q, rk4_explicit, to_first_order):
     ht = constants("h T")
     h = ht.h
     T = ht.T
     i = index("i")
 
-    rk4 = rk4_explicit(F, h, i)
-    X = rk4.states
-    K = rk4.stages
+    first_order = to_first_order(F)
+    rk4 = rk4_explicit(first_order.equations, h, i)
+    X = rk4.state_variables
+    K = rk4.stage_variables
     step_eq = rk4.step_equations
-    d = rk4.conversion
-
-    theta1_, theta2_ = d(tuple(q))
-    v_theta1_, v_theta2_ = d(dq)
-    return K, T, X, d, h, i, step_eq, theta1_, theta2_, v_theta1_, v_theta2_
+    d = rk4.conversion * first_order.conversion
+    q_ = d(q)
+    v_ = d(first_order.variables_of_order(1))
+    return K, T, X, d, h, i, q_, step_eq, v_
 
 
 @app.cell
@@ -166,18 +168,7 @@ def controls(mo):
 
 
 @app.cell
-def run_simulation(
-    T,
-    c,
-    h,
-    np,
-    sliders,
-    solver,
-    theta1_,
-    theta2_,
-    v_theta1_,
-    v_theta2_,
-):
+def run_simulation(T, c, h, np, q_, sliders, solver, v_):
     sv = sliders.value
     result = solver.run(
         {
@@ -186,10 +177,10 @@ def run_simulation(
             c.ell_1: sv["ell_1"],
             c.ell_2: sv["ell_2"],
             c.g: sv["g"],
-            theta1_[0]: sv["theta_1_0"],
-            theta2_[0]: sv["theta_2_0"],
-            v_theta1_[0]: sv["v_theta_1_0"],
-            v_theta2_[0]: sv["v_theta_2_0"],
+            q_.theta_1[0]: sv["theta_1_0"],
+            q_.theta_2[0]: sv["theta_2_0"],
+            v_.theta_1[0]: sv["v_theta_1_0"],
+            v_.theta_2[0]: sv["v_theta_2_0"],
             h: sv["h"],
             T: sv["T"],
         }
@@ -214,12 +205,12 @@ def plot_trajectory(plt, result):
 
 
 @app.cell
-def plot_timeseries(plt, result, t_, theta1_, theta2_, v_theta1_, v_theta2_):
+def plot_timeseries(plt, q_, result, t_, v_):
     _fig, axes = plt.subplots(3, 1, figsize=(6, 8), tight_layout=True)
 
     series = [
-        (r"\theta", (theta1_, theta2_)),
-        (r"v_\theta", (v_theta1_, v_theta2_)),
+        (r"\theta", (q_.theta_1, q_.theta_2)),
+        (r"v_\theta", (v_.theta_1, v_.theta_2)),
         ("E", ("E",)),
     ]
     for ax, (name, vars_) in zip(axes.flatten(), series):

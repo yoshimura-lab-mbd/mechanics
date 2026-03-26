@@ -21,6 +21,9 @@ class Conversion:
             return self.convert_expr(arg)
         elif isinstance(arg, dict):
             return self.convert_explicit_equations(arg)
+        elif _is_namedtuple_instance(arg):
+            converted = {key: self(value) for key, value in arg._asdict().items()}
+            return arg.__class__(**converted)
         elif isinstance(arg, tuple):
             return tuple(self(t) for t in arg)
         elif isinstance(arg, list):
@@ -73,3 +76,7 @@ class Compose(Conversion):
 
 def replacement(replacements: dict[Expr, Expr] | list[tuple[Expr, Expr]]) -> Replacement:
     return Replacement(replacements)
+
+
+def _is_namedtuple_instance(value: Any) -> bool:
+    return isinstance(value, tuple) and hasattr(value, "_fields") and hasattr(value, "_asdict")

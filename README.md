@@ -36,26 +36,35 @@ uv sync
 
 ## marimo ノートブックの実行
 
-依存を同期した後，次で marimo を起動できる．
+編集モードでの起動：
 ```
-uv sync
-uv run marimo edit examples/double_pendulum.py
+uv run marimo edit lib/examples/
 ```
-
 ブラウザが開いたら，`Run all` で実行する．
 
-## 既存の ipynb ノートブック
+閲覧モードでの起動（編集はエディタで行う）:
+```
+uv run marimo run lib/examples/ --watch
+```
 
-これまでの `ipynb` も残してあるので，必要な場合は VSCode + Jupyter 拡張機能で実行できる．
+他のPCからアクセスする場合は，`--host=0.0.0.0` オプションをつける．
+
+VSCode のmarimo拡張を使って，VSCode上で編集・実行することも可能．
 
 ## ドキュメント
 
 https://yoshimura-lab-mbd.github.io/mechanics/ を参照
 
+### ドキュメントのローカルでのビルド
+
+```
+uv run make -C docs html
+```
+ビルドされたドキュメントは `docs/_build/html/` にある．
 
 # 開発
 
-ライブラリ本体は[lib/]()，ライブラリを用いた簡単な計算例は[example/]()におく．具体的な研究用プログラムはプロジェクトごとルート以下にディレクトリを作成する．
+ライブラリ本体は[lib/]()，ライブラリを用いた簡単な計算例は[lib/example/]()におく．具体的な研究用プログラムはプロジェクトごとルート以下にディレクトリを作成する．
 
 ## プロジェクトの開発
 

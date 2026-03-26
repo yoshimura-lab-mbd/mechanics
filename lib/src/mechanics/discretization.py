@@ -5,7 +5,7 @@ import sympy as sp
 from mechanics.conversion import Conversion
 from mechanics.difference import FiniteDifference
 
-from .symbol import BaseSpace, Index, Expr, Variable, variables, shift_index
+from .symbol import BaseSpace, Index, Expr, Variable, variable, shift_index
 
 class Discretization(Conversion):
 
@@ -81,11 +81,10 @@ class Discretization(Conversion):
         for i, value in var.index_subs.items():
             new_subs[i] = value
 
-        new_var, = variables(var.name, 
-                             *var.index_subs.keys(), *tuple(new_indices), 
-                             space=var.space, base_spaces=tuple(new_base_spaces))
-
-        return cast(Variable, new_var.subs(var.index_subs.items()).subs(new_subs))
+        new_var = variable(var.name, *var.index_subs.keys(), *tuple(new_indices),
+                           *tuple(new_base_spaces), space=var.space)
+        
+        return cast(Variable, new_var.subs(new_subs))
 
     def _replace_subs(self, *args) -> Expr:
         expr = args[0]

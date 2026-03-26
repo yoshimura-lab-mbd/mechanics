@@ -12,7 +12,9 @@
       "Read(./**/*.pkl)",
       "Read(./**/*.parquet)",
       "Read(./**/*.csv)",
-      "Read(./**/*.log)"
+      "Read(./**/*.log)",
+      "Read(./**/__marimo__/**)",
+      "Read(./docs/build/**)"
     ]
   }
 }
