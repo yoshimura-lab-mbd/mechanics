@@ -3,26 +3,34 @@ from dataclasses import dataclass
 from mechanics.conversion import Conversion
 from mechanics.symbol import ExplicitEquations, ImplicitEquations, Variable
 
-
 @dataclass(frozen=True)
-class EulerExplicitResult:
-    states: tuple[Variable, ...]
+class ExplicitIntegratorResult:
+    state_variables: tuple[Variable, ...]
+    stage_variables: tuple[Variable, ...]
+    unknown_variables: tuple[Variable, ...]
     step_equations: ExplicitEquations
     conversion: Conversion
 
+    @property
+    def variables(self) -> tuple[Variable, ...]:
+        return self.state_variables + self.stage_variables + self.unknown_variables
+
+    @property
+    def is_explicit(self) -> bool:
+        return True
 
 @dataclass(frozen=True)
-class ModifiedEulerExplicitResult:
-    states: tuple[Variable, ...]
-    stages: tuple[Variable, ...]
-    step_equations: ExplicitEquations
-    conversion: Conversion
-
-
-@dataclass(frozen=True)
-class BackwardEulerExplicitResult:
-    states: tuple[Variable, ...]
-    unknowns: tuple[Variable, ...]
+class ImplicitIntegratorResult:
+    state_variables: tuple[Variable, ...]
+    stage_variables: tuple[Variable, ...]
+    unknown_variables: tuple[Variable, ...]
     step_equations: ImplicitEquations
     conversion: Conversion
 
+    @property
+    def variables(self) -> tuple[Variable, ...]:
+        return self.state_variables + self.stage_variables
+
+    @property
+    def is_explicit(self) -> bool:
+        return False

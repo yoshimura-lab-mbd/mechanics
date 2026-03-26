@@ -1,18 +1,17 @@
 import marimo
 
-__generated_with = "0.19.11"
+__generated_with = "0.20.1"
 app = marimo.App(width="medium")
 
-
-@app.cell
-def imports():
+with app.setup(hide_code=True):
     import marimo as mo
     import matplotlib.pyplot as plt
     import numpy as np
-    from sympy import cos, diff, sin, solve
+    from pathlib import Path
+    from sympy import cos, sin, solve
 
     import mechanics.space as space
-    from mechanics import Markdown, base_space, constants, index, variable, variables
+    from mechanics import Markdown, diff, base_space, constants, group, index, variable
     from mechanics.differential_equation import to_first_order
     from mechanics.integrator.euler import (
         backward_euler_explicit,
@@ -23,33 +22,9 @@ def imports():
     from mechanics.lagrange import euler_lagrange_equation
     from mechanics.solver import build_solver
 
-    return (
-        Markdown,
-        backward_euler_explicit,
-        base_space,
-        build_solver,
-        constants,
-        cos,
-        diff,
-        euler_explicit,
-        euler_lagrange_equation,
-        index,
-        mo,
-        modified_euler_explicit,
-        np,
-        plt,
-        rk4_explicit,
-        sin,
-        solve,
-        space,
-        to_first_order,
-        variable,
-        variables,
-    )
-
 
 @app.cell
-def intro(mo):
+def intro():
     mo.md("""
     # Kepler problem: Integrator comparison
 
@@ -59,40 +34,42 @@ def intro(mo):
 
 
 @app.cell
-def derive_lagrangian(base_space, constants, cos, diff, sin, space, variable):
-    t = base_space("t")
-
-    def dot(f):
-        return diff(f, t)
-
-    r_var = variable("r", t)
-    theta_var = variable(r"\theta", t, space=space.S)
-    q = (r_var, theta_var)
-
-    dq = tuple(dot(q_n) for q_n in q)
-    ddq = tuple(dot(dq_n) for dq_n in dq)
-
-    c = constants(r"\mu m")
-
-    x = r_var * cos(theta_var)
-    y = r_var * sin(theta_var)
-
-    U = -c.mu / r_var
-    kinetic = (c.m / 2 * (dot(x) ** 2 + dot(y) ** 2)).simplify()
-    E = kinetic + U
-    L = kinetic - U
-    return E, L, c, ddq, dq, q, x, y
+def _():
+    mo.image(src=Path(__file__).with_name("figure") / "kepler_orbit.svg")
+    return
 
 
 @app.cell
-def derive_equations(L, ddq, euler_lagrange_equation, q, solve):
+def derive_lagrangian():
+    t = base_space("t")
+
+    q = group(
+        variable("r", t),
+        variable(r"\theta", t, space=space.S),
+    )
+
+    c = constants(r"\mu m")
+
+    f = group(
+        x=q.r * cos(q.theta),
+        y=q.r * sin(q.theta),
+        U=-c.mu * c.m / q.r,
+        K=lambda f: (c.m / 2 * (diff(f.x, t) ** 2 + diff(f.y, t) ** 2)).simplify(),
+        E=lambda f: f.K + f.U,
+    )
+    L = f.K - f.U
+    return L, c, f, q, t
+
+
+@app.cell
+def derive_equations(L, q, t):
     EL = euler_lagrange_equation(L, q)
-    F = solve(EL, ddq)
+    F = solve(EL, diff(q, t, 2))
     return EL, F
 
 
 @app.cell(hide_code=True)
-def show_symbolic_results(EL, F, L, Markdown, mo):
+def show_symbolic_results(EL, F, L):
     md = Markdown()
     md.add_markdown("### Lagrangian")
     md.show("L = ", L)
@@ -105,129 +82,68 @@ def show_symbolic_results(EL, F, L, Markdown, mo):
 
 
 @app.cell
-def setup_constants(constants, index):
+def setup_constants():
     ht = constants("h T")
     h = ht.h
     T = ht.T
     i = index("i")
-
-    return h, i, T
+    return T, h, i
 
 
 @app.cell
-def build_integrators(
-    F,
-    backward_euler_explicit,
-    dq,
-    euler_explicit,
-    h,
-    i,
-    modified_euler_explicit,
-    q,
-    rk4_explicit,
-    to_first_order,
-):
-    # Convert to first-order form
+def build_integrators(F, h, i, q):
     first_order = to_first_order(F)
 
-    integrators = {}
-
-    # Euler explicit
-    euler = euler_explicit(first_order.equations, h, i)
-    integrators["Euler"] = {
-        "result": euler,
-        "states": euler.state_variables,
-        "stages": (),
-        "step_eq": euler.step_equations,
-        "conversion": euler.conversion,
+    integrators = {
+        "Euler": euler_explicit(first_order.equations, h, i),
+        "Backward Euler": backward_euler_explicit(first_order.equations, h, i),
+        "Heun's method": modified_euler_explicit(first_order.equations, h, i),
+        "RK4": rk4_explicit(first_order.equations, h, i),
     }
 
-    # Backward Euler
-    b_euler = backward_euler_explicit(first_order.equations, h, i)
-    integrators["Backward Euler"] = {
-        "result": b_euler,
-        "states": b_euler.state_variables,
-        "unknowns": b_euler.unknowns,
-        "stages": (),
-        "step_eq": b_euler.step_equations,
-        "conversion": b_euler.conversion,
-    }
-
-    # Heun (modified Euler)
-    heun = modified_euler_explicit(first_order.equations, h, i)
-    integrators["Heun"] = {
-        "result": heun,
-        "states": heun.state_variables,
-        "stages": heun.stage_variables,
-        "step_eq": heun.step_equations,
-        "conversion": heun.conversion,
-    }
-
-    # RK4
-    rk4 = rk4_explicit(first_order.equations, h, i)
-    integrators["RK4"] = {
-        "result": rk4,
-        "states": rk4.state_variables,
-        "stages": rk4.stage_variables,
-        "step_eq": rk4.step_equations,
-        "conversion": rk4.conversion,
-    }
-
-    # Compute converted variables using first_order + rk4 conversion
-    d = rk4.conversion * first_order.conversion
-    r_, theta_ = d(q)
-    v_r_, v_theta_ = d(dq)
-
-    return first_order, integrators, r_, theta_, v_r_, v_theta_
+    q_ = integrators["RK4"].conversion(q)
+    v_ = integrators["RK4"].conversion(first_order.variables_of_order(1))
+    return first_order, integrators, q_, v_
 
 
 @app.cell
-def build_solvers(E, T, build_solver, c, first_order, h, i, integrators, x, y):
+def build_solvers(T, c, f, first_order, h, i, integrators):
     solvers = {}
 
-    for method, integ in integrators.items():
-        solver = build_solver()
-        solver.constants(*c)
-        solver.constants(h, T)
+    for _method, _integrator in integrators.items():
+        _solver = build_solver()
+        _solver.constants(*c)
+        _solver.constants(h, T)
+        _solver.variables(*_integrator.variables, index=(i, 0, T / h))
+        _solver.functions(*f._fields, index=(i, 0, T / h))
+        _solver.inputs(*(x_[0] for x_ in _integrator.state_variables))
 
-        states = integ["states"]
-        stages = integ["stages"]
-        solver.variables(*states, *stages, index=(i, 0, T / h))
-        solver.functions("x", "y", "E", index=(i, 0, T / h))
-        solver.inputs(*(x_[0] for x_ in states))
+        d = _integrator.conversion * first_order.conversion
 
-        # Combined conversion for this integrator
-        d = integ["conversion"] * first_order.conversion
-
-        with solver.steps(i, 0, T / h) as step:
-            if method == "Backward Euler":
-                # Backward Euler needs Newton solver
-                with step.newton() as newton:
-                    newton.unknowns(*integ["unknowns"])
-                    newton.initial_guess({v: v.subs(i, i - 1) for v in integ["unknowns"]})
-                    newton.implicit(integ["step_eq"])
+        with _solver.steps(i, 0, T / h) as step:
+            if _integrator.is_explicit:
+                step.explicit(_integrator.step_equations)
             else:
-                # Explicit methods
-                step.explicit(integ["step_eq"])
-            step.calculate({"x": d(x), "y": d(y), "E": d(E)}, i)
+                with step.newton() as newton:
+                    newton.unknowns(*_integrator.unknown_variables)
+                    newton.initial_guess({v: v.subs(i, i - 1) for v in _integrator.unknown_variables})
+                    newton.implicit(_integrator.step_equations)
+            step.calculate(d(f), i)
 
-        solvers[method] = solver.generate()
-
-    return solvers
+        solvers[_method] = _solver.generate()
+    return (solvers,)
 
 
 @app.cell
-def controls(mo):
+def controls():
     sliders = mo.ui.dictionary(
         {
-            "mu": mo.ui.slider(start=0.1, stop=10.0, step=0.1, value=1.0, label=r"$\mu$"),
-            "m": mo.ui.slider(start=0.1, stop=10.0, step=0.1, value=1.0, label=r"$m$"),
             "r_0": mo.ui.slider(start=0.1, stop=5.0, step=0.1, value=1.0, label=r"$r(0)$"),
             "theta_0": mo.ui.slider(start=-3.14, stop=3.14, step=0.01, value=0.0, label=r"$\theta(0)$"),
             "v_r_0": mo.ui.slider(start=-5.0, stop=5.0, step=0.1, value=0.0, label=r"$\dot{r}(0)$"),
             "v_theta_0": mo.ui.slider(start=0.1, stop=5.0, step=0.1, value=1.1, label=r"$\dot{\theta}(0)$"),
-            "h": mo.ui.slider(start=0.001, stop=0.5, step=0.01, value=0.2, label=r"$h$"),
-            "T": mo.ui.slider(start=10.0, stop=200.0, step=10.0, value=100.0, label=r"$T$"),
+            "h": mo.ui.number(start=0.001, stop=0.5, step=0.01, value=0.2, label=r"$h$"),
+            "T": mo.ui.number(start=10.0, stop=200.0, step=10.0, value=100.0, label=r"$T$"),
         }
     )
     sliders
@@ -235,29 +151,28 @@ def controls(mo):
 
 
 @app.cell
-def run_simulations(T, c, h, r_, sliders, solvers, theta_, v_r_, v_theta_):
-    sv = sliders.value
+def run_simulations(T, c, h, q_, sliders, solvers, v_):
+    _values = sliders.value
     results = {}
 
-    for method, solver in solvers.items():
-        results[method] = solver.run(
+    for _method, _solver in solvers.items():
+        results[_method] = _solver.run(
             {
-                c.mu: sv["mu"],
-                c.m: sv["m"],
-                r_[0]: sv["r_0"],
-                theta_[0]: sv["theta_0"],
-                v_r_[0]: sv["v_r_0"],
-                v_theta_[0]: sv["v_theta_0"],
-                h: sv["h"],
-                T: sv["T"],
+                c.mu: 1.0,
+                c.m: 1.0,
+                q_.r[0]: _values["r_0"],
+                q_.theta[0]: _values["theta_0"],
+                v_.r[0]: _values["v_r_0"],
+                v_.theta[0]: _values["v_theta_0"],
+                h: _values["h"],
+                T: _values["T"],
             }
         )
-
-    return results
+    return (results,)
 
 
 @app.cell
-def plot_orbits(np, plt, r_, results, theta_):
+def plot_orbits(results):
     plt.rcParams["font.family"] = "Times New Roman"
     plt.rcParams["mathtext.fontset"] = "cm"
 
@@ -268,8 +183,8 @@ def plot_orbits(np, plt, r_, results, theta_):
     _ax.set_xlim(-2, 2)
     _ax.set_ylim(-2, 2)
 
-    for method, result in results.items():
-        _ax.plot(result["x"], result["y"], label=method, linewidth=2)
+    for _method, _result in results.items():
+        _ax.plot(_result["x"], _result["y"], label=_method, linewidth=2)
 
     _ax.legend()
     _ax.set_title("Orbital comparison")
@@ -278,21 +193,20 @@ def plot_orbits(np, plt, r_, results, theta_):
 
 
 @app.cell
-def plot_timeseries(np, plt, r_, results, sliders, theta_, v_r_, v_theta_):
+def plot_timeseries(T, h, q_, results, sliders, v_):
     plt.rcParams["font.family"] = "Times New Roman"
     plt.rcParams["mathtext.fontset"] = "cm"
 
-    sv = sliders.value
-    h_val = sv["h"]
+    h_val = sliders.value["h"]
 
     _fig, axes = plt.subplots(3, 2, figsize=(10, 10), tight_layout=True)
     axes = axes.flatten()
 
     series = [
-        (r"r", r_),
-        (r"\theta", theta_),
-        (r"\dot{r}", v_r_),
-        (r"\dot{\theta}", v_theta_),
+        (r"r", q_.r),
+        (r"\theta", q_.theta),
+        (r"\dot{r}", v_.r),
+        (r"\dot{\theta}", v_.theta),
         ("E", "E"),
     ]
 
@@ -301,17 +215,16 @@ def plot_timeseries(np, plt, r_, results, sliders, theta_, v_r_, v_theta_):
         ax.set_xlabel("$t$")
         ax.set_ylabel(f"${name}$")
 
-        # Set y-axis limits based on RK4 result
         rk4_result = results["RK4"][var][:-1]
-        if hasattr(rk4_result, 'max'):
+        if hasattr(rk4_result, "max"):
             value_range = rk4_result.max() - rk4_result.min()
             value_center = (rk4_result.max() + rk4_result.min()) / 2
             ax.set_ylim(value_center - value_range * 0.6, value_center + value_range * 0.6)
 
-        for method, result in results.items():
-            n_points = len(result[var][:-1])
-            t_data = np.arange(n_points) * h_val
-            ax.plot(t_data, result[var][:-1], label=method, linewidth=1.5)
+        for _method, _result in results.items():
+            t_ = np.arange(0, _result[T], _result[h])
+            n = min(len(t_), len(_result[var]))
+            ax.plot(t_[:n], _result[var][:n], label=_method, linewidth=1.5)
 
         ax.legend()
         ax.grid(True, alpha=0.3)

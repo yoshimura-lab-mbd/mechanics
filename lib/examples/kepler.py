@@ -3,10 +3,11 @@ import marimo
 __generated_with = "0.20.1"
 app = marimo.App(width="medium")
 
-with app.setup:
+with app.setup(hide_code=True):
     import marimo as mo
     import matplotlib.pyplot as plt
     import numpy as np
+    from pathlib import Path
     from sympy import cos, sin, solve
 
     import mechanics.space as space
@@ -22,6 +23,12 @@ def intro():
     mo.md("""
     # Kepler problem
     """)
+    return
+
+
+@app.cell
+def figure():
+    mo.image(src=Path(__file__).with_name("figure") / "kepler_orbit.svg")
     return
 
 

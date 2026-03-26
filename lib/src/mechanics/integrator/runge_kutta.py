@@ -5,18 +5,7 @@ from mechanics.symbol import Variable, Expr, ExplicitEquations, Index, variables
 from mechanics.differential_equation import is_first_order
 from mechanics.discretization import discretization
 from mechanics.conversion import Conversion
-
-@dataclass(frozen=True)
-class RK4ExplicitResult:
-    state_variables: tuple[Variable, ...]
-    stage_variables: tuple[Variable, ...]
-    step_equations: ExplicitEquations
-    conversion: Conversion
-
-    @property
-    def variables(self) -> tuple[Variable, ...]:
-        return self.state_variables + self.stage_variables
-
+from .result import ExplicitIntegratorResult
 
 # input: \dot{X} = F(X)
 # output: K_1 = dt * F(X)
@@ -24,7 +13,7 @@ class RK4ExplicitResult:
 #         K_3 = dt * F(X + 1/2 * K_2)
 #         X_{i+1} = X_i + 1/6 * (K_1 + 2 * K_2 + 2 * K_3 + dt * F(X + K_3))
 def rk4_explicit(F: ExplicitEquations, dt: Expr, i: Index) \
-    -> RK4ExplicitResult:
+    -> ExplicitIntegratorResult:
     """ Runge-Kutta 4th order explicit integrator for first-order explicit equations.
 
     """
@@ -69,9 +58,10 @@ def rk4_explicit(F: ExplicitEquations, dt: Expr, i: Index) \
     for x_ in X:
         step[x_.subs(i, i + 1)] = x_ + (K1[x_] + 2 * K2[x_] + 2 * K3[x_] + dt * F_[x_].subs(K3_subs)) / 6
 
-    return RK4ExplicitResult(
+    return ExplicitIntegratorResult(
         state_variables=tuple(X),
         stage_variables=tuple(K1.values()) + tuple(K2.values()) + tuple(K3.values()),
+        unknown_variables=(),
         step_equations=step,
         conversion=d,
     )

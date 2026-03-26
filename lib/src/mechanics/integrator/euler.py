@@ -3,16 +3,12 @@ from typing import cast
 from mechanics.symbol import ExplicitEquations, ImplicitEquations, Variable, Expr, Index, variable
 from mechanics.differential_equation import is_first_order
 from mechanics.discretization import discretization
-from mechanics.integrator.result import (
-    BackwardEulerExplicitResult,
-    EulerExplicitResult,
-    ModifiedEulerExplicitResult,
-)
+from mechanics.integrator.result import ExplicitIntegratorResult, ImplicitIntegratorResult
 
 # input: \dot{X} = F(X)
 # output: X_{i+1} = X_i + dt * F(X_i)
 def euler_explicit(F: ExplicitEquations, dt: Expr, i: Index) \
-    -> EulerExplicitResult:
+    -> ExplicitIntegratorResult:
     if not is_first_order(F):
         raise ValueError("euler_explicit requires first-order equations. Use to_first_order() to convert.")
 
@@ -26,13 +22,19 @@ def euler_explicit(F: ExplicitEquations, dt: Expr, i: Index) \
         X.add(x_.general_form())
         step[x_.subs(i, i + 1)] = x_ + dt * d(fX)
 
-    return EulerExplicitResult(states=tuple(X), step_equations=step, conversion=d)
+    return ExplicitIntegratorResult(
+        state_variables=tuple(X),
+        stage_variables=(),
+        unknown_variables=(),
+        step_equations=step,
+        conversion=d,
+    )
 
 # input: \dot{X} = F(X)
 # output: K = dt * F(X)
 #         X_{i+1} = X_i + 1/2 * (K + dt * F(X_i + K))
 def modified_euler_explicit(F: ExplicitEquations, dt: Expr, i: Index) \
-    -> ModifiedEulerExplicitResult:
+    -> ExplicitIntegratorResult:
     if not is_first_order(F):
         raise ValueError("modified_euler_explicit requires first-order equations. Use to_first_order() to convert.")
 
@@ -59,9 +61,10 @@ def modified_euler_explicit(F: ExplicitEquations, dt: Expr, i: Index) \
     for x_ in X:
         step[x_.subs(i, i + 1)] = x_ + (K[x_] + dt * F_[x_].subs(K_subs)) / 2
 
-    return ModifiedEulerExplicitResult(
-        states=tuple(X),
-        stages=tuple(K.values()),
+    return ExplicitIntegratorResult(
+        state_variables=tuple(X),
+        stage_variables=tuple(K.values()),
+        unknown_variables=(),
         step_equations=step,
         conversion=d,
     )
@@ -72,7 +75,7 @@ heun_explicit = modified_euler_explicit
 # input: \dot{X} = F(X)
 # output: X_{i+1} = dt * F(X_{i+1})
 def backward_euler_explicit(F: ExplicitEquations, dt: Expr, i: Index) \
-    -> BackwardEulerExplicitResult:
+    -> ImplicitIntegratorResult:
     if not is_first_order(F):
         raise ValueError("backward_euler_explicit requires first-order equations. Use to_first_order() to convert.")
 
@@ -88,9 +91,10 @@ def backward_euler_explicit(F: ExplicitEquations, dt: Expr, i: Index) \
         step.append(x_.subs(i, i + 1) - x_ - dt * d(fX).subs(i, i + 1))
         unknowns.append(x_.subs(i, i + 1))
 
-    return BackwardEulerExplicitResult(
-        states=tuple(X),
-        unknowns=tuple(unknowns),
+    return ImplicitIntegratorResult(
+        state_variables=tuple(X),
+        stage_variables=(),
+        unknown_variables=tuple(unknowns),
         step_equations=tuple(step),
         conversion=d,
     )
